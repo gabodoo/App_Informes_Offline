@@ -1,0 +1,23 @@
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+
+# Carpetas de compilación del ejecutable (PyInstaller)
+build/
+dist/
+*.spec
+
+# Documentos generados y pruebas (No subir datos sensibles)
+Informes_Generados/
+Informes_Generados_Backup/
+*.pdf
+*.docx
+
+# Excepciones
+!plantillas/*.docx
