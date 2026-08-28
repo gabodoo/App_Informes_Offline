@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from procesador import ProcesadorInformes
+from procesador import ProcesadorInformes, BecarioNoEncontradoIESException, FechaFinInsuficienteException, BecarioNoCulminariaAmpliacionException
 
 
 class AppInformes(ctk.CTk):
@@ -328,15 +328,13 @@ class AppInformes(ctk.CTk):
             rutas_generadas = procesador.ejecutar()
             rutas_str = "\n".join(str(r.name) for r in rutas_generadas)
             
-            fecha_fin = getattr(procesador, 'fecha_fin', None)
-            from datetime import date
-            if fecha_fin and fecha_fin < date(2026, 1, 1):
-                msg_alerta = f"ATENCIÓN: La fecha de fin en el Informe es {fecha_fin.strftime('%d/%m/%Y')} (antes del 1 de enero de 2026)."
+            if hasattr(procesador, 'advertencias') and procesador.advertencias:
+                adv_text = "\n\n".join(procesador.advertencias)
                 self.after(
                     0,
-                    lambda m=msg_alerta: messagebox.showwarning("Atención - Fecha de fin", m)
+                    lambda m=adv_text: messagebox.showwarning("Atención", m)
                 )
-                
+
             self.after(
                 0,
                 lambda: messagebox.showinfo(
@@ -345,6 +343,13 @@ class AppInformes(ctk.CTk):
                 ),
             )
             self.after(0, lambda: self._btn_nuevo.configure(state="normal"))
+        except (BecarioNoEncontradoIESException, FechaFinInsuficienteException, BecarioNoCulminariaAmpliacionException) as e:
+            self._log(f"ADVERTENCIA: {e}")
+            msg = str(e)
+            self.after(
+                0,
+                lambda m=msg: messagebox.showwarning("Atención", m)
+            )
         except Exception as exc:
             self._log(f"ERROR: {exc}")
             import traceback
@@ -362,4 +367,5 @@ class AppInformes(ctk.CTk):
     def _finalizar_procesamiento(self) -> None:
         self._procesando = False
         self._btn_generar.configure(state="normal")
+        self._btn_nuevo.configure(state="normal")
 

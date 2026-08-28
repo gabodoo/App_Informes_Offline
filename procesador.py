@@ -17,6 +17,21 @@ import pdfplumber
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[float, str], None]
 
+
+class BecarioNoEncontradoIESException(Exception):
+    """Excepción lanzada cuando el becario no se encuentra en el Excel de la IES."""
+    pass
+
+
+class FechaFinInsuficienteException(Exception):
+    """Excepción lanzada cuando la fecha fin del becario es insuficiente para el semestre."""
+    pass
+
+
+class BecarioNoCulminariaAmpliacionException(Exception):
+    """Excepción lanzada cuando el Informe SUCCOR indica que el becario no culminaría estudios con la ampliación."""
+    pass
+
 MESES_ES = {
     1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
     5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
@@ -47,6 +62,14 @@ def numero_ordinal(n: int) -> str:
                6: "to", 7: "mo", 8: "vo", 9: "no"}
     sufijo = sufijos.get(n, "mo")
     return f"{n}{sufijo}"
+
+
+def formatear_curso_oracion(c: str) -> str:
+    """Convierte un curso a tipo oración pero mantiene números romanos al final."""
+    if not c:
+        return c
+    c_formateado = str(c).strip().capitalize()
+    return re.sub(r'\b([ivxlcdm]+)$', lambda m: m.group(1).upper(), c_formateado, flags=re.IGNORECASE)
 
 
 def texto_a_fecha(texto: str) -> date | None:
@@ -154,7 +177,7 @@ def construir_tabla_ciclos(fecha_inicio: date, fecha_fin: date) -> list[dict]:
         })
         n += 1
 
-        if fecha_fin_ciclo >= fecha_fin:
+        if fecha_fin_ciclo >= fecha_fin or semestre_actual == "2026-I":
             break
         if n > 20:
             break
@@ -356,6 +379,14 @@ class ExtractorInformeSuccor:
                     pass
             texto_completo = "\n".join(textos)
 
+        # Validar heurísticamente si el informe indica que no culminaría con la ampliación
+        patron_no_culmina = re.compile(
+            r"\bno\s+(?:culminar[ií]a|acabar[ií]a|terminar[ií]a|finalizar[ií]a|concluir[ií]a).{0,50}?(?:estudios|carrera|2026-ii|ampliaci[oó]n)\b",
+            re.IGNORECASE
+        )
+        if patron_no_culmina.search(texto_completo):
+            raise BecarioNoCulminariaAmpliacionException("En el Informe de la SUCCOR se señala que el becario no culminaria estudios con la ampliacion. Revisar el contenido de dicho Informe")
+
         # Nombre completo del informe
         m = cls.PATRON_NOMBRE_INFORME.search(texto_completo)
         if m:
@@ -425,8 +456,10 @@ class ExtractorInformeSuccor:
                         # La celda puede tener varios cursos separados por saltos de línea o numeración
                         cursos_celda = cls._parsear_cursos_celda(val_cursos)
                         for c in cursos_celda:
-                            if c and c not in resultado["cursos_pendientes_ies"]:
-                                resultado["cursos_pendientes_ies"].append(c)
+                            if c:
+                                c_fmt = formatear_curso_oracion(c)
+                                if c_fmt not in resultado["cursos_pendientes_ies"]:
+                                    resultado["cursos_pendientes_ies"].append(c_fmt)
 
             # B. Tablas horizontales (Clave en celda j, Valor en celda j+1)
             for fila in tabla:
@@ -521,7 +554,7 @@ class ExtractorInformeSuccor:
                 for parte in partes:
                     parte = re.sub(r"^[\d]+\.\s*", "", parte).strip()
                     if len(parte) > 3:
-                        cursos.append(parte)
+                        cursos.append(formatear_curso_oracion(parte))
         return cursos
 
     @classmethod
@@ -550,8 +583,10 @@ class ExtractorInformeSuccor:
                 # Limpiar duplicación por columnas paralelas en PDFs de dos columnas:
                 # Ej: 'Teoría de las Relaciones 1. Teoría de las Relaciones' -> 'Teoría de las Relaciones'
                 curso = cls._limpiar_duplicacion_columna(curso)
-                if curso and len(curso) > 3 and curso not in cursos:
-                    cursos.append(curso)
+                if curso and len(curso) > 3:
+                    curso_fmt = formatear_curso_oracion(curso)
+                    if curso_fmt not in cursos:
+                        cursos.append(curso_fmt)
         return cursos
 
     @staticmethod
@@ -583,7 +618,10 @@ class ExtractorInformeSuccor:
 
     @staticmethod
     def _limpiar(valor: str) -> str:
-        return re.sub(r"\s+", " ", valor.replace("\n", " ")).strip(" :-\t")
+        v = re.sub(r"\s+", " ", valor.replace("\n", " ")).strip(" :-\t")
+        # Asegurar espacio después de N° o Nº si le sigue texto pegado
+        v = re.sub(r'\b(N[°º])([^\s])', r'\1 \2', v, flags=re.IGNORECASE)
+        return v
 
 
 # ============================================================
@@ -599,7 +637,8 @@ class ExtractorCalendarioAcademico:
     )
     PALABRAS_MATRICULA = (
         "matrícula", "matricula", "matrículas", "matriculas",
-        "periodo de matrícula", "proceso de matrícula", "inscripción", "inscripcion"
+        "periodo de matrícula", "proceso de matrícula", "inscripción", "inscripcion",
+        "matrcula", "matr"
     )
     PALABRAS_INICIO = (
         "inicio de clases", "inicio de estudios", "inicio del semestre",
@@ -637,51 +676,91 @@ class ExtractorCalendarioAcademico:
                     pass
             texto_completo = "\n".join(textos)
 
+        # 1. Búsqueda estructurada en tablas (prioridad)
+        if semestre_solicitado:
+            sem_lower = semestre_solicitado.lower()
+            for tabla in tablas:
+                if not tabla or len(tabla) < 2:
+                    continue
+                
+                header_row = [str(c or "").lower().strip() for c in tabla[0]]
+                col_mat = -1
+                col_ini = -1
+                col_per = -1
+                
+                for i, h in enumerate(header_row):
+                    if col_mat == -1 and any(p in h for p in cls.PALABRAS_MATRICULA):
+                        col_mat = i
+                    if col_ini == -1 and any(p in h for p in cls.PALABRAS_INICIO):
+                        col_ini = i
+                    if col_per == -1 and ("periodo" in h or "semestre" in h):
+                        col_per = i
+                
+                if col_per != -1 and (col_mat != -1 or col_ini != -1):
+                    for fila in tabla[1:]:
+                        if not fila or len(fila) <= col_per:
+                            continue
+                        celda_per = str(fila[col_per] or "").lower()
+                        if sem_lower in celda_per:
+                            if col_mat != -1 and len(fila) > col_mat and not resultado["fecha_matricula"]:
+                                f_mat = cls._extraer_primera_fecha(str(fila[col_mat] or ""))
+                                if f_mat:
+                                    resultado["fecha_matricula"] = f_mat
+                                    resultado["fecha_matricula_texto"] = fecha_a_texto(f_mat)
+                            if col_ini != -1 and len(fila) > col_ini and not resultado["fecha_inicio_estudios"]:
+                                f_ini = cls._extraer_primera_fecha(str(fila[col_ini] or ""))
+                                if f_ini:
+                                    resultado["fecha_inicio_estudios"] = f_ini
+                                    resultado["fecha_inicio_estudios_texto"] = fecha_a_texto(f_ini)
+
         # Filtrar bloque relevante por semestre e IES si se proporcionan
         bloque = cls._filtrar_bloque(texto_completo, semestre_solicitado, ies_filtro)
 
-        # Buscar fecha de matrícula en texto
-        for palabra in cls.PALABRAS_MATRICULA:
-            pos = bloque.lower().find(palabra)
-            if pos != -1:
-                zona = bloque[pos: pos + 250]
-                fecha = cls._extraer_primera_fecha(zona)
-                if fecha:
-                    resultado["fecha_matricula"] = fecha
-                    resultado["fecha_matricula_texto"] = fecha_a_texto(fecha)
-                    break
+        # Buscar fecha de matrícula en texto (fallback)
+        if not resultado["fecha_matricula"]:
+            for palabra in cls.PALABRAS_MATRICULA:
+                pos = bloque.lower().find(palabra)
+                if pos != -1:
+                    zona = bloque[pos: pos + 250]
+                    fecha = cls._extraer_primera_fecha(zona)
+                    if fecha:
+                        resultado["fecha_matricula"] = fecha
+                        resultado["fecha_matricula_texto"] = fecha_a_texto(fecha)
+                        break
 
-        # Buscar fecha de inicio de estudios en texto
-        for palabra in cls.PALABRAS_INICIO:
-            pos = bloque.lower().find(palabra)
-            if pos != -1:
-                zona = bloque[pos: pos + 250]
-                fecha = cls._extraer_primera_fecha(zona)
-                if fecha:
-                    resultado["fecha_inicio_estudios"] = fecha
-                    resultado["fecha_inicio_estudios_texto"] = fecha_a_texto(fecha)
-                    break
+        # Buscar fecha de inicio de estudios en texto (fallback)
+        if not resultado["fecha_inicio_estudios"]:
+            for palabra in cls.PALABRAS_INICIO:
+                pos = bloque.lower().find(palabra)
+                if pos != -1:
+                    zona = bloque[pos: pos + 250]
+                    fecha = cls._extraer_primera_fecha(zona)
+                    if fecha:
+                        resultado["fecha_inicio_estudios"] = fecha
+                        resultado["fecha_inicio_estudios_texto"] = fecha_a_texto(fecha)
+                        break
 
-        # Fallback: buscar en tablas
-        for tabla in tablas:
-            for fila in tabla:
-                if not fila:
-                    continue
-                texto_fila = " ".join(str(c or "") for c in fila).lower()
-                for palabra in cls.PALABRAS_MATRICULA:
-                    if palabra in texto_fila and not resultado["fecha_matricula"]:
-                        for celda in fila:
-                            f = cls._extraer_primera_fecha(str(celda or ""))
-                            if f:
-                                resultado["fecha_matricula"] = f
-                                resultado["fecha_matricula_texto"] = fecha_a_texto(f)
-                for palabra in cls.PALABRAS_INICIO:
-                    if palabra in texto_fila and not resultado["fecha_inicio_estudios"]:
-                        for celda in fila:
-                            f = cls._extraer_primera_fecha(str(celda or ""))
-                            if f:
-                                resultado["fecha_inicio_estudios"] = f
-                                resultado["fecha_inicio_estudios_texto"] = fecha_a_texto(f)
+        # Fallback: buscar en tablas sin estructura clara
+        if not resultado["fecha_matricula"] or not resultado["fecha_inicio_estudios"]:
+            for tabla in tablas:
+                for fila in tabla:
+                    if not fila:
+                        continue
+                    texto_fila = " ".join(str(c or "") for c in fila).lower()
+                    for palabra in cls.PALABRAS_MATRICULA:
+                        if palabra in texto_fila and not resultado["fecha_matricula"]:
+                            for celda in fila:
+                                f = cls._extraer_primera_fecha(str(celda or ""))
+                                if f:
+                                    resultado["fecha_matricula"] = f
+                                    resultado["fecha_matricula_texto"] = fecha_a_texto(f)
+                    for palabra in cls.PALABRAS_INICIO:
+                        if palabra in texto_fila and not resultado["fecha_inicio_estudios"]:
+                            for celda in fila:
+                                f = cls._extraer_primera_fecha(str(celda or ""))
+                                if f:
+                                    resultado["fecha_inicio_estudios"] = f
+                                    resultado["fecha_inicio_estudios_texto"] = fecha_a_texto(f)
 
         resultado["raw_text"] = texto_completo
         return resultado
@@ -772,13 +851,24 @@ class ExtractorDocumentoIESExcel:
                 if header_idx is not None:
                     headers = [str(val or "").strip() for val in raw_df.iloc[header_idx].values]
                     df_sheet = raw_df.iloc[header_idx + 1:].copy()
-                    df_sheet.columns = headers
-                    sheet_dfs.append(df_sheet)
                 else:
                     df_sheet = raw_df.copy()
-                    df_sheet.columns = [str(c).strip() for c in df_sheet.iloc[0].values]
+                    headers = [str(c).strip() for c in df_sheet.iloc[0].values]
                     df_sheet = df_sheet.iloc[1:]
-                    sheet_dfs.append(df_sheet)
+                
+                # Desduplicar headers para evitar error de Reindexing en pd.concat
+                seen = {}
+                unique_headers = []
+                for h in headers:
+                    if h in seen:
+                        seen[h] += 1
+                        unique_headers.append(f"{h}_{seen[h]}")
+                    else:
+                        seen[h] = 0
+                        unique_headers.append(h)
+                
+                df_sheet.columns = unique_headers
+                sheet_dfs.append(df_sheet)
                     
             if not sheet_dfs:
                 _log("No se pudo extraer información del Excel de la IES.")
@@ -816,10 +906,32 @@ class ExtractorDocumentoIESExcel:
             col_dni = next((c for c in df_full.columns if "DNI" in c or "DOCUMENTO" in c), None)
             col_nom = next((c for c in df_full.columns if "APELLIDOS Y NOMBRES" in c or "BECARIO" in c or "NOMBRES Y APELLIDOS" in c or "NOMBRES" in c or "APELLIDOS" in c), None)
             
-            # Asegurar agarrar la columna de nombres de cursos y evitar la de cantidad (N°)
-            col_cursos = next((c for c in df_full.columns if "NOMBRE DE CURSOS PENDIENTES" in c or "NOMBRE EXACTO" in c), None)
-            if not col_cursos:
-                col_cursos = next((c for c in df_full.columns if "CURSOS PENDIENTES" in c and "N°" not in c and "NUMERO" not in c), None)
+            # Lógica heurística para encontrar la columna de Cursos Pendientes
+            col_cursos = None
+            mejor_puntaje = 0
+            
+            for c in df_full.columns:
+                t = str(c).lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+                puntaje = 0
+                
+                # Grupo A (Sustantivo: +3)
+                if any(p in t for p in ["curso", "asignatura", "materia"]): puntaje += 3
+                # Grupo B (Condición: +4)
+                if any(p in t for p in ["pendiente", "faltante", "aprobar", "llevar", "restante", "concluir"]): puntaje += 4
+                # Grupo C (Contexto: +1)
+                if any(p in t for p in ["nombre", "detalle", "lista", "descripcion"]): puntaje += 1
+                # Grupo D (Excluyentes: -10)
+                if any(p in t for p in ["aprobado", "concluido", "historico", "llevado", "n°", "numero", "cantidad", "total"]): puntaje -= 10
+                    
+                if puntaje > mejor_puntaje:
+                    mejor_puntaje = puntaje
+                    col_cursos = c
+                    
+            # Umbral mínimo
+            if mejor_puntaje < 6:
+                col_cursos = None
+            else:
+                _log(f"Columna de cursos heurística: '{col_cursos}' (Puntaje: {mejor_puntaje})")
             
             if not col_dni or not col_cursos:
                 _log("No se encontraron las columnas necesarias (DNI o Cursos Pendientes) en el Excel de la IES.")
@@ -845,7 +957,7 @@ class ExtractorDocumentoIESExcel:
                     if col_nom:
                         row_nom = _norm(row[col_nom])
                         matches = sum(1 for t in tokens_target if t in row_nom)
-                        if matches > max_matches:
+                        if matches > max_matches or mejor_fila is None:
                             max_matches = matches
                             mejor_fila = row
                     else:
@@ -860,23 +972,24 @@ class ExtractorDocumentoIESExcel:
                     
                 cursos_raw = str(mejor_fila[col_cursos]).strip()
                 if cursos_raw:
+                    _log(f"Cursos extraídos sin procesar: {cursos_raw}")
                     # Separar casos que no tengan saltos de línea evidentes
                     cursos_raw = re.sub(r'(\w+)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
                     cursos_raw = re.sub(r'\b(Electivo)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
                     cursos_raw = re.sub(r'\b(Electivo)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
                     cursos_raw = re.sub(r'\b([IVX]+)\s+([A-Z])', r'\1\n\2', cursos_raw)
                     
-                    if "\n" in cursos_raw:
-                        lista_cursos = [c.strip() for c in cursos_raw.split("\n") if c.strip()]
-                    else:
-                        lista_cursos = [c.strip() for c in cursos_raw.split(",") if c.strip()]
+                    # Dividir usando múltiples separadores posibles: salto de línea, coma, guión (con espacios), o punto y coma
+                    separadores = r'\n|;|,(?!\s*\d)|\s+[-–—]\s+'
+                    lista_cursos = [c.strip() for c in re.split(separadores, cursos_raw) if c.strip()]
+                    _log(f"Cursos separados: {lista_cursos}")
                         
                     cursos_limpios = []
                     for c in lista_cursos:
                         c = re.sub(r"^[\d]+[\.\-\)\s]+\s*", "", c).strip()
                         c = re.sub(r"^[-•·]\s*", "", c).strip()
                         if len(c) > 3:
-                            cursos_limpios.append(c)
+                            cursos_limpios.append(formatear_curso_oracion(c))
                             
                     if cursos_limpios:
                         resultado["cursos_pendientes"] = cursos_limpios
@@ -885,7 +998,10 @@ class ExtractorDocumentoIESExcel:
                         )
             else:
                 _log("No se encontró el DNI en el Excel de la IES.")
+                raise BecarioNoEncontradoIESException("el becario no se encuentra en el documento de la IES, verificar si cumple el requisito de culminar los cursos en el 2026-II")
                 
+        except BecarioNoEncontradoIESException:
+            raise
         except Exception as e:
             _log(f"Error procesando Excel IES: {e}")
             
@@ -1005,8 +1121,9 @@ class ExtractorDocumentoIES:
                 nombre = m_f.group(2).strip()
                 # Filtrar líneas de créditos o encabezados
                 if nombre and len(nombre) > 3 and not re.search(r"cr[eé]dito|total|subtotal", nombre, re.IGNORECASE):
-                    if nombre not in cursos_tabla:
-                        cursos_tabla.append(nombre)
+                    nombre_fmt = formatear_curso_oracion(nombre)
+                    if nombre_fmt not in cursos_tabla:
+                        cursos_tabla.append(nombre_fmt)
             if cursos_tabla:
                 resultado["cursos_pendientes"] = cursos_tabla
                 resultado["cursos_pendientes_texto"] = "\n".join(
@@ -1038,8 +1155,10 @@ class ExtractorDocumentoIES:
                 # Filtrar líneas que describen créditos (no son nombres de cursos)
                 if cls.PATRON_CREDITO.search(curso):
                     continue
-                if len(curso) > 3 and curso not in cursos:
-                    cursos.append(curso)
+                if len(curso) > 3:
+                    curso_fmt = formatear_curso_oracion(curso)
+                    if curso_fmt not in cursos:
+                        cursos.append(curso_fmt)
             resultado["cursos_pendientes"] = cursos
             resultado["cursos_pendientes_texto"] = "\n".join(
                 f"{i+1}. {c}" for i, c in enumerate(cursos)
@@ -1572,6 +1691,14 @@ class ProcesadorInformes:
             ctx["ESTADO_PROCEDENCIA"] = "PROCEDENTE" if es_procedente else "OBSERVADO"
         else:
             ctx["ESTADO_PROCEDENCIA"] = "(no evaluado - fechas incompletas)"
+            
+        if f_sol and f_mat and f_sol >= f_mat:
+            self._log(f"  [DEBUG] f_sol={f_sol} >= f_mat={f_mat}. Agregando advertencia.")
+            if not hasattr(self, 'advertencias'):
+                self.advertencias = []
+            self.advertencias.append("La fecha del formato autogenerado es igual o mayor que la fecha de matricula. Revisar los documentos.")
+        else:
+            self._log(f"  [DEBUG] Condicion no cumplida: f_sol={f_sol}, f_mat={f_mat}")
         self._log(f"  Procedencia: {ctx['ESTADO_PROCEDENCIA']}")
 
         # --- Paso 4: Cruce con Padrón (Ground Truth) ---
@@ -1628,6 +1755,9 @@ class ProcesadorInformes:
             ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi) if fi else datos_bd["fecha_inicio_sibec_raw"]
             ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff) if ff else datos_bd["fecha_fin_sibec_raw"]
             self.fecha_fin = ff
+            if ff and ff < date(2026, 4, 1):
+                msg = f"ATENCIÓN: La fecha de fin de estudios del becario es {ff.strftime('%d/%m/%Y')} (antes del 1 de abril de 2026). Fijarse si corresponde la ampliacion para el 2026-II"
+                raise FechaFinInsuficienteException(msg)
 
             # Tabla de ciclos
             if fi and ff:
