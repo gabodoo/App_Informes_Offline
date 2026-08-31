@@ -680,3 +680,28 @@ class GeneradorWord:
                 break
         doc2.save(ruta_docx)
 
+
+    def generar_informe_multiple(self, super_contexto: dict, log_callback=None) -> Path:
+        def log(msg):
+            if log_callback:
+                log_callback(msg)
+                
+        self.ruta_plantilla_informe = get_base_dir() / "plantillas" / "plantilla_informe_multiple.docx"
+        if not self.ruta_plantilla_informe.exists():
+            log(f"No se encontró la plantilla múltiple en {self.ruta_plantilla_informe}")
+            raise FileNotFoundError(f"Falta plantilla: {self.ruta_plantilla_informe}")
+            
+        log("Cargando plantilla de informe múltiple (docxtpl)...")
+        from docxtpl import DocxTemplate
+        doc = DocxTemplate(str(self.ruta_plantilla_informe))
+        doc.render(super_contexto)
+        
+        num_inf = super_contexto.get("NUMERO_INFORME_GENERAR", "S-N")
+        nombre_salida = f"Informe_{num_inf}_Multiple.docx"
+        ruta_salida = get_base_dir() / "Informes_Generados" / nombre_salida
+        ruta_salida.parent.mkdir(parents=True, exist_ok=True)
+        
+        log(f"Guardando Informe Múltiple en: {ruta_salida.name}")
+        doc.save(ruta_salida)
+        return ruta_salida
+
