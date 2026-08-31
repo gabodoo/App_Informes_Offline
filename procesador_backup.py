@@ -57,7 +57,7 @@ def texto_a_fecha(texto: str) -> date | None:
 
     # Formato largo: 15 de julio de 2026 o 15 de julio del 2026
     m = re.search(
-        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)\s+de(?:l)?\s+(\d{4})", texto, re.IGNORECASE
+        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})", texto, re.IGNORECASE
     )
     if m:
         dia, mes_texto, anio = int(m.group(1)), m.group(2).lower(), int(m.group(3))
@@ -258,8 +258,8 @@ class ExtractorInformeSuccor:
     """Extrae metadatos del Informe de la SUCCOR soportando tablas horizontales y verticales."""
 
     PATRON_NOMBRE_INFORME = re.compile(
-        r"^[ \t]*(INFORME\s+N[°ºo\.]?\s*[\d]+[-\s\w/\-\.]+(?:SUCCOR[-\w]*)?)",
-        re.IGNORECASE | re.MULTILINE,
+        r"(INFORME\s+(?:N[°ºo\.]?|NRO\.?|NÚMERO|N)?\s*[\d]+[-\s\w/\-\.]+(?:SUCCOR[-\w]*)?)",
+        re.IGNORECASE,
     )
     PATRON_SIGEDO = re.compile(
         r"(?:SIGEDO|Expediente|CUT|Trámite|Tramite)\s*(?:N[°ºo\.]?\s*)?([A-Z0-9\.\-]{4,18})",
@@ -341,6 +341,23 @@ class ExtractorInformeSuccor:
         if m:
             resultado["nombre_informe_succor"] = cls._limpiar(m.group(1))
             resultado["numero_informe"] = cls._limpiar(m.group(1))
+        else:
+            texto_lower = texto_completo.lower()
+            mejor_pos = texto_lower.find("succor")
+            if mejor_pos != -1:
+                zona = texto_completo[max(0, mejor_pos - 400): mejor_pos + 400]
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|°|º|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(zona)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+            
+            if not resultado["nombre_informe_succor"]:
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|°|º|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(texto_completo)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
 
         # SIGEDO
         m = cls.PATRON_SIGEDO.search(texto_completo)
@@ -708,7 +725,7 @@ class ExtractorDocumentoIESExcel:
     
     PATRON_CODIGO = re.compile(r"\b([A-Z0-9]{2,}[\.\-][A-Z0-9\.\-]{2,}[\.\-][A-Z0-9\.\-]{2,})\b", re.IGNORECASE)
     PATRON_CODIGO_ALT = re.compile(r"(CARTA|OFICIO|MEMORANDO|CONSTANCIA|NOTA|COMUNICADO)\s+N[°ºo\.]?\s*([\d\w/\.\-]+)", re.IGNORECASE)
-    PATRON_FECHA = re.compile(r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)\s+de(?:l)?\s+(\d{4})", re.IGNORECASE)
+    PATRON_FECHA = re.compile(r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})", re.IGNORECASE)
 
     @classmethod
     def extraer(
@@ -888,7 +905,7 @@ class ExtractorDocumentoIES:
         re.IGNORECASE,
     )
     PATRON_FECHA = re.compile(
-        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)\s+de(?:l)?\s+(\d{4})",
+        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})",
         re.IGNORECASE,
     )
     PATRON_SECCION_CURSOS = re.compile(
