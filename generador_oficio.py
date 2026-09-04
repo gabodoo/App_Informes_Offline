@@ -134,7 +134,7 @@ class GeneradorOficio:
         from lxml import etree
         for node in doc._element.xpath('.//w:t'):
             if not node.text: continue
-        nombre_salida = f"{sigedo_corto}_oficio.docx"
+        nombre_salida = contexto.get("NOMBRE_SALIDA_OFICIO", f"{sigedo_corto}_oficio.docx")
         ruta_salida = get_base_dir() / "Informes_Generados" / nombre_salida
         ruta_salida.parent.mkdir(parents=True, exist_ok=True)
         

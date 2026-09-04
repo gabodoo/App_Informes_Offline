@@ -305,7 +305,7 @@ class ExtractorInformeSuccor:
         re.IGNORECASE,
     )
     PATRON_SIGEDO = re.compile(
-        r"(?:SIGEDO|Expediente|CUT|Trámite|Tramite)\s*(?:N[°ºo\.]?\s*)?([A-Z0-9\.\-]{4,18})",
+        r"(?:SIGEDO|Expediente|CUT|Trámite|Tramite)\s*(?:N[°ºo\.]?\s*)?([A-Z0-9\.\-]*\d[A-Z0-9\.\-]*)",
         re.IGNORECASE,
     )
     PATRONES_DNI_TEXTO = [
@@ -677,14 +677,42 @@ class ExtractorInformeSuccor:
         
         m = cls.PATRON_NOMBRE_INFORME.search(texto_completo)
         if m:
-            resultado["nombre_informe_succor"] = cls._limpiar(m.group(1))
-            resultado["numero_informe"] = cls._limpiar(m.group(1))
+            inf_nombre = cls._limpiar(m.group(1))
+            resultado["nombre_informe_succor"] = inf_nombre
+            resultado["numero_informe"] = inf_nombre
+            m_num = re.search(r"(\d+-\d{4})", inf_nombre)
+            if m_num:
+                resultado["numero_sigedo"] = m_num.group(1)
+        else:
+            texto_lower = texto_completo.lower()
+            mejor_pos = texto_lower.find("succor")
+            if mejor_pos != -1:
+                zona = texto_completo[max(0, mejor_pos - 400): mejor_pos + 400]
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|º|°|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(zona)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+            
+            if not resultado["nombre_informe_succor"]:
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|º|°|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(texto_completo)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+                    
+        inf_nombre_file = Path(ruta_pdf).stem
+        if not resultado["nombre_informe_succor"]:
+            resultado["nombre_informe_succor"] = inf_nombre_file
+        m_num = re.search(r"(\d+-\d{4})", inf_nombre_file)
+        if m_num and not resultado.get("numero_sigedo"):
+            resultado["numero_sigedo"] = m_num.group(1)
         
         m = cls.PATRON_SIGEDO.search(texto_completo)
-        if m:
+        if m and not resultado.get("numero_sigedo"):
             resultado["numero_sigedo"] = m.group(1)
             
-        for m in cls.PATRON_SEMESTRE.finditer(texto_completo):
+                for m in cls.PATRON_SEMESTRE.finditer(texto_completo):
             resultado["semestre_solicitado"] = f"{m.group(1)}-{m.group(2)}"
             
         # Extract global values
@@ -921,8 +949,8 @@ class ExtractorDocumentoIESExcel:
     def extraer(
         cls,
         ruta_excel: str | Path,
-        dni_validado: str,
-        nombres_y_apellidos: str,
+        dni_validado: str = "",
+        nombres_y_apellidos: str = "",
         log: LogCallback | None = None
     ) -> dict:
         _log = log or (lambda msg: None)
@@ -1043,6 +1071,9 @@ class ExtractorDocumentoIESExcel:
             
             if not col_dni or not col_cursos:
                 _log("No se encontraron las columnas necesarias (DNI o Cursos Pendientes) en el Excel de la IES.")
+                return resultado
+                
+            if not dni_validado:
                 return resultado
                 
             def _norm(texto: str) -> str:
@@ -1729,6 +1760,7 @@ class ProcesadorInformes:
         self._log = log or (lambda msg: None)
         self._progreso = progreso or (lambda pct, msg: None)
         self.nro_informe = nro_informe
+        self.rutas_formatos = [Path(r) for r in rutas_formatos] if rutas_formatos else []
 
     def ejecutar(self) -> Path:
         self._validar_entradas()
@@ -2016,9 +2048,10 @@ class ProcesadorInformes:
 
     def ejecutar_multiple(self) -> list[Path]:
         from datetime import date
-        from .generador_word import GeneradorWord
-        from .generador_excel import GeneradorExcel
-        from .procesador import (
+        from generador_word import GeneradorWord
+        from generador_excel import GeneradorExcel
+        from generador_oficio import GeneradorOficio
+        from procesador import (
             ExtractorInformeSuccor, ExtractorCalendarioAcademico, ExtractorDocumentoIES, 
             ExtractorFormatoAutogenerado, ExtractorPadron, nombre_en_orden_nombres_apellidos, 
             limpiar_beca_convocatoria, texto_a_fecha, fecha_a_corto, construir_tabla_ciclos, 
@@ -2050,7 +2083,7 @@ class ProcesadorInformes:
         
         super_contexto = {
             "CANTIDAD_BECARIOS": len(self.rutas_formatos),
-            "FECHA_ACTUAL_TEXTO": date.today().strftime("%d de %m del %Y").replace(" 0", " ").replace("de 01", "de enero").replace("de 02", "de febrero").replace("de 03", "de marzo").replace("de 04", "de abril").replace("de 05", "de mayo").replace("de 06", "de junio").replace("de 07", "de julio").replace("de 08", "de agosto").replace("de 09", "de septiembre").replace("de 10", "de octubre").replace("de 11", "de noviembre").replace("de 12", "de diciembre"),
+            "FECHA_ACTUAL_TEXTO": fecha_a_texto(date.today()),
             "NUMERO_SIGEDO_GLOBAL": datos_succor.get("numero_sigedo", ""),
             "BECA_TITULO_GLOBAL": "",
             "INSTITUCION_GLOBAL": datos_succor.get("institucion", ""),
@@ -2065,6 +2098,7 @@ class ProcesadorInformes:
         rutas_salida = []
         gen_word = GeneradorWord()
         gen_excel = GeneradorExcel()
+        gen_oficio = GeneradorOficio()
         
         # Iterar por cada formato autogenerado cargado
         for idx, ruta_fmt in enumerate(self.rutas_formatos):
@@ -2122,9 +2156,11 @@ class ProcesadorInformes:
                 ctx["FECHA_FIN_SIBEC"] = ""
                 ctx["TABLA_CICLOS"] = []
                 
-            ctx["EXPEDIENTE"] = expediente
-            ctx["NUMERO_EXPEDIENTE"] = expediente
-            ctx["EXPEDIENTE_BECARIO"] = expediente
+            exp_padron = padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
+            exp_final = exp_padron if exp_padron else expediente
+            ctx["EXPEDIENTE"] = exp_final
+            ctx["NUMERO_EXPEDIENTE"] = exp_final
+            ctx["EXPEDIENTE_BECARIO"] = exp_final
             ctx["RJD_ADJUDICACION"] = datos_succor.get("rjd_adjudicacion", "")
             ctx["INSTITUCION"] = super_contexto["INSTITUCION_GLOBAL"]
             ctx["CARRERA"] = datos_succor.get("carrera", "")
@@ -2150,15 +2186,27 @@ class ProcesadorInformes:
             ctx_oficio["NUMERO_INFORME_GENERAR"] = self.nro_informe
             ctx_oficio["SEMESTRE_SOLICITADO"] = super_contexto["SEMESTRE_SOLICITADO_GLOBAL"]
             ctx_oficio["REFERENCIA_SUCCOR"] = super_contexto["REFERENCIA_SUCCOR"]
+            sigedo_c = super_contexto.get("NUMERO_SIGEDO_GLOBAL", "").split("-")[0]
+            ctx_oficio["SIGEDO_CORTO"] = sigedo_c
+            ctx_oficio["NOMBRE_SALIDA_OFICIO"] = f"{sigedo_c}_Oficio_{idx+1}.docx"
             try:
-                ruta_of = gen_word.generar_oficio(ctx_oficio, self._log)
+                ruta_of = gen_oficio.generar(ctx_oficio, self._log)
                 rutas_salida.append(ruta_of)
             except Exception as e:
                 self._log(f"Error generando oficio {idx+1}: {e}")
 
         # Añadir ref SUCCOR a referencias
-        super_contexto["REFERENCIAS"].append(super_contexto["REFERENCIA_SUCCOR"])
+        if super_contexto["REFERENCIA_SUCCOR"]:
+            super_contexto["REFERENCIAS"].append(super_contexto["REFERENCIA_SUCCOR"])
         super_contexto["FECHAS_SOLICITUD_TEXTO"] = super_contexto["becarios"][0]["FECHA_SOLICITUD_TEXTO"] if super_contexto["becarios"] else ""
+
+        # Formatear REFERENCIAS con literales
+        refs_formateadas = []
+        letras = "abcdefghijklmnopqrstuvwxyz"
+        for i, ref in enumerate(super_contexto["REFERENCIAS"]):
+            letra = letras[i] if i < len(letras) else str(i)
+            refs_formateadas.append(f"{letra}) {ref}")
+        super_contexto["REFERENCIAS"] = refs_formateadas
 
         self._progreso(0.8, "Generando Informe Múltiple...")
         # Generar Informe Múltiple

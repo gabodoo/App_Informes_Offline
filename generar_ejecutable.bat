@@ -63,4 +63,4 @@ echo  Proceso finalizado.
 echo  Tu aplicacion esta lista en:
 echo  %DIR_DIST%\main.exe
 echo ============================================
-pause
+REM pause
