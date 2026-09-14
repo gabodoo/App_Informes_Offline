@@ -9,7 +9,12 @@ from pathlib import Path
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() == "main" and exe_dir.parent.name.lower() == "dist":
+            return exe_dir.parent.parent
+        if exe_dir.name.lower() == "dist":
+            return exe_dir.parent
+        return exe_dir
     return Path(__file__).resolve().parent
 
 

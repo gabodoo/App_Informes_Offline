@@ -1,23 +1,43 @@
-# Archivos temporales de Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Entornos virtuales
+# Entornos virtuales de Python
 venv/
 env/
 ENV/
+.venv/
 
-# Carpetas de compilación del ejecutable (PyInstaller)
+# Archivos compilados y temporales de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Carpetas de compilacion del ejecutable (PyInstaller)
 build/
 dist/
 *.spec
 
-# Documentos generados y pruebas (No subir datos sensibles)
-Informes_Generados/
+# Archivos y carpetas temporales de pruebas / scratch
+scratch/
+
+# Documentos generados y proteccion de datos personales (padron, expedientes, etc.)
+Informes_Generados/*
+!Informes_Generados/.gitkeep
 Informes_Generados_Backup/
 *.pdf
 *.docx
+*.xlsx
+*.xls
+*.csv
 
-# Excepciones
+# Excepciones obligatorias: Plantillas maestras del sistema
 !plantillas/*.docx
+!plantillas/*.xlsx
+
+# Archivos de respaldo temporales
+*_backup.*
+*_backup_*.*
+*_patch.*
+
+# Archivos de configuracion local de IDE
+GEMINI.md
+.geminiignore
+.antigravityignore

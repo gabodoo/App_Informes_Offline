@@ -5,9 +5,15 @@ from docx.shared import Pt
 import sys
 
 def get_base_dir() -> Path:
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).parent
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() == "main" and exe_dir.parent.name.lower() == "dist":
+            return exe_dir.parent.parent
+        if exe_dir.name.lower() == "dist":
+            return exe_dir.parent
+        return exe_dir
     return Path(__file__).resolve().parent
+
 
 class GeneradorOficio:
     """Clase para la generación del Oficio a partir de su plantilla."""
@@ -28,8 +34,9 @@ class GeneradorOficio:
         doc = Document(self.ruta_plantilla)
         
         # 1. Reemplazos directos
-        sigedo_corto = contexto.get("SIGEDO_CORTO", "")
-        reemplazo_sigedo = str(contexto.get("NUMERO_SIGEDO", ""))
+        sigedo_completo = str(contexto.get("NUMERO_SIGEDO") or contexto.get("NUMERO_SIGEDO_GLOBAL") or "")
+        sigedo_corto = contexto.get("SIGEDO_CORTO") or (sigedo_completo.split("-")[0] if sigedo_completo else "")
+        reemplazo_sigedo = sigedo_completo if sigedo_completo else sigedo_corto
         n_bec = str(contexto.get("NOMBRES_BECARIO", "")).strip()
         a_bec = str(contexto.get("APELLIDOS_BECARIO", "")).strip()
         reemplazo_nombres = f"{n_bec} {a_bec}".strip()
@@ -43,18 +50,21 @@ class GeneradorOficio:
             ("57897-2026", reemplazo_sigedo),
             ("Señorita", trato),
             ("MAINIA ROSITA SEKUTA KAYACH", reemplazo_nombres),
-            ("Escrito de fecha 17 de julio de 2026", reemplazo_fecha),
             ("Informe N° 6541-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS", reemplazo_informe),
             ("Informe N° 6541-2026-MINEDU/VMGI-PRONABEC-DIBEC", reemplazo_informe),
             ("Informe N° 6541", reemplazo_informe),
             ("57897", sigedo_corto),
         ]
 
+        patron_escrito = re.compile(r"Escrito\s+de\s+fecha\s+[^,\.\n\(\);]+?(?:de\s+\d{4}|\b\d{4}\b)", re.IGNORECASE)
+
         def _reemplazar_texto_run(run):
             texto_nuevo = run.text
             for tag, val in patrones_reemplazo:
                 if tag in texto_nuevo:
                     texto_nuevo = texto_nuevo.replace(tag, val)
+            if patron_escrito.search(texto_nuevo):
+                texto_nuevo = patron_escrito.sub(reemplazo_fecha, texto_nuevo)
             
             if texto_nuevo != run.text:
                 run.text = texto_nuevo
@@ -74,6 +84,8 @@ class GeneradorOficio:
                 for tag, val in patrones_reemplazo:
                     if tag in texto_nuevo:
                         texto_nuevo = texto_nuevo.replace(tag, val)
+                if patron_escrito.search(texto_nuevo):
+                    texto_nuevo = patron_escrito.sub(reemplazo_fecha, texto_nuevo)
                 
                 if texto_nuevo != texto_orig:
                     fmt_guardado = {}
@@ -138,43 +150,13 @@ class GeneradorOficio:
         ruta_salida = get_base_dir() / "Informes_Generados" / nombre_salida
         ruta_salida.parent.mkdir(parents=True, exist_ok=True)
         
+                # Actualizar casillas de texto (SIGEDO en cuadro de texto flotante)
+        if reemplazo_sigedo:
+            for p_elem in doc._element.xpath('.//w:txbxContent//w:p'):
+                for t in p_elem.xpath('.//w:t'):
+                    if "SIGEDO" in t.text or "57897" in t.text:
+                        t.text = f"SIGEDO: {reemplazo_sigedo}"
+
         log(f"Guardando Oficio en: {ruta_salida.name}")
         doc.save(ruta_salida)
-        
-        # Post-procesamiento: Reemplazo robusto en XML para texto dividido (como cuadros de texto)
-        import zipfile
-        import tempfile
-        import os
-        import re
-
-        temp_dir = tempfile.mkdtemp()
-        with zipfile.ZipFile(ruta_salida, 'r') as zin:
-            zin.extractall(temp_dir)
-            
-        doc_xml_path = os.path.join(temp_dir, 'word', 'document.xml')
-        if os.path.exists(doc_xml_path):
-            with open(doc_xml_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Buscar 5...7...8...9...7
-            patron_57897_2026 = re.compile(r'5(<[^>]+>)*7(<[^>]+>)*8(<[^>]+>)*9(<[^>]+>)*7(<[^>]+>)*-(<[^>]+>)*2(<[^>]+>)*0(<[^>]+>)*2(<[^>]+>)*6')
-            content = patron_57897_2026.sub(reemplazo_sigedo, content)
-            
-            patron_57897 = re.compile(r'5(<[^>]+>)*7(<[^>]+>)*8(<[^>]+>)*9(<[^>]+>)*7')
-            content = patron_57897.sub(sigedo_corto, content)
-            
-            with open(doc_xml_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-                
-        # Empaquetar de nuevo
-        with zipfile.ZipFile(ruta_salida, 'w', zipfile.ZIP_DEFLATED) as zout:
-            for root, _, files in os.walk(temp_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, temp_dir)
-                    zout.write(file_path, arcname)
-                    
-        import shutil
-        shutil.rmtree(temp_dir)
-        
         return ruta_salida

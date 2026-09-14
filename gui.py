@@ -59,7 +59,8 @@ class AppInformes(ctk.CTk):
         self._ruta_calendario_academico_mult = tk.StringVar()
         self._ruta_documento_ies_mult = tk.StringVar()
 
-        self._modo_actual = "individual"
+        self._modo_actual = "actualizacion"
+        self._menu_ampliaciones_abierto = False
         self._procesando = False
 
         self._construir_ui()
@@ -69,19 +70,67 @@ class AppInformes(ctk.CTk):
         self.grid_rowconfigure(2, weight=1)
 
         # --- Sidebar (Menú lateral simulado) ---
-        sidebar = ctk.CTkFrame(self, width=200, fg_color=self.COLOR_FONDO_BLANCO, border_width=1, border_color=self.COLOR_BORDE, corner_radius=0)
+        sidebar = ctk.CTkFrame(self, width=220, fg_color=self.COLOR_FONDO_BLANCO, border_width=1, border_color=self.COLOR_BORDE, corner_radius=0)
         sidebar.grid(row=0, column=0, rowspan=3, sticky="nsew")
         sidebar.grid_propagate(False)
 
         # Logo PRONABEC simulado
         logo_lbl = ctk.CTkLabel(sidebar, text="PRONABEC", font=ctk.CTkFont(size=22, weight="bold"), text_color=self.COLOR_AZUL_OSCURO)
-        logo_lbl.pack(pady=(20, 30), padx=20, anchor="w")
+        logo_lbl.pack(pady=(20, 25), padx=20, anchor="w")
 
-        self.btn_individual = ctk.CTkButton(sidebar, text="✎ Individual", fg_color="transparent", text_color=self.COLOR_ROSA, anchor="w", hover_color="#f0f0f0", font=ctk.CTkFont(size=14), command=lambda: self._cambiar_modo("individual"))
-        self.btn_individual.pack(fill="x", pady=5, padx=10)
+        # 1. Opción principal: Actualización
+        self.btn_actualizacion = ctk.CTkButton(
+            sidebar,
+            text="Actualización",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=14),
+            command=lambda: self._cambiar_modo("actualizacion")
+        )
+        self.btn_actualizacion.pack(fill="x", pady=4, padx=10)
+        self.btn_ecs = self.btn_actualizacion
 
-        self.btn_multiple = ctk.CTkButton(sidebar, text="📥 Múltiple", fg_color="transparent", text_color=self.COLOR_TEXTO_OSCURO, anchor="w", hover_color="#f0f0f0", font=ctk.CTkFont(size=14), command=lambda: self._cambiar_modo("multiple"))
-        self.btn_multiple.pack(fill="x", pady=5, padx=10)
+        # 2. Opción principal: Ampliaciones (desplegable)
+        self.btn_ampliaciones = ctk.CTkButton(
+            sidebar,
+            text="📁 Ampliaciones  ▶",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=14),
+            command=self._toggle_menu_ampliaciones
+        )
+        self.btn_ampliaciones.pack(fill="x", pady=4, padx=10)
+
+        # Contenedor para subopciones de Ampliaciones (desglosable)
+        self.frame_submenu_ampliaciones = ctk.CTkFrame(sidebar, fg_color="transparent")
+
+        self.btn_individual = ctk.CTkButton(
+            self.frame_submenu_ampliaciones,
+            text="    ✎ Individual",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=13),
+            command=lambda: self._cambiar_modo("individual")
+        )
+        self.btn_individual.pack(fill="x", pady=2, padx=(10, 10))
+
+        self.btn_multiple = ctk.CTkButton(
+            self.frame_submenu_ampliaciones,
+            text="    📥 Múltiple",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=13),
+            command=lambda: self._cambiar_modo("multiple")
+        )
+        self.btn_multiple.pack(fill="x", pady=2, padx=(10, 10))
 
 
         # --- Header Azul (Top Bar) ---
@@ -110,6 +159,9 @@ class AppInformes(ctk.CTk):
         self._btn_nuevo = ctk.CTkButton(toolbar, text="Nuevo", fg_color=self.COLOR_AZUL_CLARO, hover_color="#1f618d", text_color="white", font=ctk.CTkFont(size=13, weight="bold"), corner_radius=0, command=self._limpiar_para_nuevo_informe, state="disabled")
         self._btn_nuevo.pack(side="left", padx=2, fill="y", ipadx=10)
 
+        self._btn_abrir_carpeta = ctk.CTkButton(toolbar, text="📂 Abrir Carpeta", fg_color="#27ae60", hover_color="#1e8449", text_color="white", font=ctk.CTkFont(size=13, weight="bold"), corner_radius=0, command=self._abrir_carpeta_salida)
+        self._btn_abrir_carpeta.pack(side="left", padx=2, fill="y", ipadx=10)
+
 
         # --- Contenedor de Vistas ---
         self.main_container = ctk.CTkFrame(self, fg_color=self.COLOR_FONDO_BLANCO)
@@ -127,13 +179,18 @@ class AppInformes(ctk.CTk):
         self.frames["multiple"] = self._construir_vista_multiple(self.main_container)
         self.frames["multiple"].grid(row=0, column=0, sticky="nsew")
 
+        # Vista Actualización (pantalla en blanco)
+        self.frames["actualizacion"] = self._construir_vista_actualizacion(self.main_container)
+        self.frames["actualizacion"].grid(row=0, column=0, sticky="nsew")
+        self.frames["actualizacion_ecs"] = self.frames["actualizacion"]
+
         # --- Progreso y Log (Común) ---
         status_frame = ctk.CTkFrame(self.main_container, fg_color=self.COLOR_FONDO_BLANCO)
         status_frame.grid(row=1, column=0, sticky="nsew", pady=(20, 0))
         status_frame.grid_columnconfigure(0, weight=1)
         status_frame.grid_rowconfigure(2, weight=1)
 
-        self._lbl_estado = ctk.CTkLabel(status_frame, text="Estado: Listo", font=ctk.CTkFont(size=12), text_color=self.COLOR_TEXTO_OSCURO, anchor="w")
+        self._lbl_estado = ctk.CTkLabel(status_frame, text="Módulo: Actualización", font=ctk.CTkFont(size=12), text_color=self.COLOR_TEXTO_OSCURO, anchor="w")
         self._lbl_estado.grid(row=0, column=0, sticky="ew", pady=(0, 5))
 
         self._barra_progreso = ctk.CTkProgressBar(status_frame, progress_color=self.COLOR_AZUL_CLARO, height=8)
@@ -143,18 +200,71 @@ class AppInformes(ctk.CTk):
         self._log_text = ctk.CTkTextbox(status_frame, font=ctk.CTkFont(family="Consolas", size=12), border_width=1, border_color=self.COLOR_BORDE, fg_color="#fafafa", text_color="#333", corner_radius=0, state="disabled")
         self._log_text.grid(row=2, column=0, sticky="nsew")
 
-        self._cambiar_modo("individual")
+        self._cambiar_modo("actualizacion")
+
+    def _toggle_menu_ampliaciones(self, abrir: bool | None = None) -> None:
+        if abrir is None:
+            nuevo_estado = not self._menu_ampliaciones_abierto
+        else:
+            nuevo_estado = abrir
+
+        if nuevo_estado:
+            if not self._menu_ampliaciones_abierto:
+                self.frame_submenu_ampliaciones.pack(fill="x", pady=(0, 5), padx=0)
+                self._menu_ampliaciones_abierto = True
+            self.btn_ampliaciones.configure(text="📁 Ampliaciones  ▼")
+            if self._modo_actual not in ("individual", "multiple"):
+                self._cambiar_modo("individual")
+        else:
+            if self._menu_ampliaciones_abierto:
+                self.frame_submenu_ampliaciones.pack_forget()
+                self._menu_ampliaciones_abierto = False
+            self.btn_ampliaciones.configure(text="📁 Ampliaciones  ▶")
 
     def _cambiar_modo(self, modo: str) -> None:
-        self._modo_actual = modo
-        if modo == "individual":
-            self.btn_individual.configure(text_color=self.COLOR_ROSA)
-            self.btn_multiple.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        if modo in ("actualizacion", "actualizacion_ecs"):
+            self._modo_actual = "actualizacion"
         else:
+            self._modo_actual = modo
+
+        # Resetear colores
+        self.btn_actualizacion.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        self.btn_ampliaciones.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        self.btn_individual.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        self.btn_multiple.configure(text_color=self.COLOR_TEXTO_OSCURO)
+
+        if self._modo_actual == "actualizacion":
+            self.btn_actualizacion.configure(text_color=self.COLOR_ROSA)
+            if not self._procesando:
+                self._btn_generar.configure(state="normal")
+            self._lbl_estado.configure(text="Módulo: Actualización")
+
+        elif self._modo_actual == "individual":
+            if not self._menu_ampliaciones_abierto:
+                self._toggle_menu_ampliaciones(abrir=True)
+            self.btn_ampliaciones.configure(text_color=self.COLOR_AZUL_OSCURO)
+            self.btn_individual.configure(text_color=self.COLOR_ROSA)
+            if not self._procesando:
+                self._btn_generar.configure(state="normal")
+            self._lbl_estado.configure(text="Estado: Listo (Modo Individual)")
+
+        elif self._modo_actual == "multiple":
+            if not self._menu_ampliaciones_abierto:
+                self._toggle_menu_ampliaciones(abrir=True)
+            self.btn_ampliaciones.configure(text_color=self.COLOR_AZUL_OSCURO)
             self.btn_multiple.configure(text_color=self.COLOR_ROSA)
-            self.btn_individual.configure(text_color=self.COLOR_TEXTO_OSCURO)
-        
-        self.frames[modo].tkraise()
+            if not self._procesando:
+                self._btn_generar.configure(state="normal")
+            self._lbl_estado.configure(text="Estado: Listo (Modo Múltiple)")
+
+        target_mode = "actualizacion" if self._modo_actual == "actualizacion" else self._modo_actual
+        if target_mode in self.frames:
+            self.frames[target_mode].tkraise()
+
+    def _construir_vista_actualizacion(self, parent) -> ctk.CTkFrame:
+        # Pantalla en blanco para Actualización
+        frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
+        return frame
 
     def _construir_vista_individual(self, parent) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
@@ -309,6 +419,19 @@ class AppInformes(ctk.CTk):
 
     # --- Lógica principal ---
 
+    def _abrir_carpeta_salida(self) -> None:
+        try:
+            from generador_word import SALIDA_DIR
+            salida = SALIDA_DIR
+        except Exception:
+            salida = Path("Informes_Generados").resolve()
+        salida.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+            os.startfile(str(salida))
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo abrir la carpeta:\n{e}")
+
     def _limpiar_para_nuevo_informe(self) -> None:
         if self._modo_actual == "individual":
             self._nro_informe.set("")
@@ -350,6 +473,10 @@ class AppInformes(ctk.CTk):
         self.after(0, _actualizar)
 
     def _validar_entradas(self) -> bool:
+        if self._modo_actual not in ("individual", "multiple"):
+            messagebox.showwarning("Seleccione una opción", "Por favor seleccione 'Individual' o 'Múltiple' dentro del menú Ampliaciones.")
+            return False
+
         if self._modo_actual == "individual":
             if not self._nro_informe.get().strip():
                 messagebox.showwarning("Datos incompletos", "Por favor ingrese el Nro. de Informe a generar.")
@@ -400,6 +527,9 @@ class AppInformes(ctk.CTk):
 
     def _iniciar_generacion(self) -> None:
         if self._procesando:
+            return
+        if self._modo_actual not in ("individual", "multiple"):
+            messagebox.showinfo("Información", "Seleccione 'Individual' o 'Múltiple' dentro de Ampliaciones para generar informes.")
             return
         if not self._validar_entradas():
             return
@@ -456,14 +586,30 @@ class AppInformes(ctk.CTk):
                     lambda m=adv_text: messagebox.showwarning("Atención", m)
                 )
 
+            salida_dir = None
+            if rutas_generadas:
+                salida_dir = rutas_generadas[0].parent
+            else:
+                try:
+                    from generador_word import SALIDA_DIR
+                    salida_dir = SALIDA_DIR
+                except Exception:
+                    salida_dir = Path('Informes_Generados').resolve()
+
             self.after(
                 0,
                 lambda: messagebox.showinfo(
-                    "Completado",
-                    f"Operación finalizada. Archivos:\n\n{rutas_str}",
+                    'Completado',
+                    f'Operación finalizada.\n\nCarpeta de salida:\n{salida_dir}\n\nArchivos:\n{rutas_str}',
                 ),
             )
-            self.after(0, lambda: self._btn_nuevo.configure(state="normal"))
+            self.after(0, lambda: self._btn_nuevo.configure(state='normal'))
+            if salida_dir and salida_dir.exists():
+                try:
+                    import os
+                    os.startfile(str(salida_dir))
+                except Exception:
+                    pass
         except (BecarioNoEncontradoIESException, FechaFinInsuficienteException, BecarioNoCulminariaAmpliacionException) as e:
             self._log(f"ADVERTENCIA: {e}")
             msg = str(e)
