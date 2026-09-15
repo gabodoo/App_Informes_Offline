@@ -1,10 +1,24 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 set "DIR_PROYECTO=%~dp0"
 set "DIR_PLANTILLAS=%DIR_PROYECTO%plantillas"
 set "DIR_DIST=%DIR_PROYECTO%dist\main"
-set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python313\python.exe"
+
+:: Detectar el ejecutable de Python disponible (venv, Python313, Python312 o PATH)
+if exist "%DIR_PROYECTO%venv\Scripts\python.exe" (
+    set "PYTHON=%DIR_PROYECTO%venv\Scripts\python.exe"
+) else if exist "%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python313\python.exe" (
+    set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python313\python.exe"
+) else if exist "%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python312\python.exe" (
+    set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python312\python.exe"
+) else (
+    set "PYTHON=python"
+)
+
+echo ============================================
+echo  Usando Python: %PYTHON%
+echo ============================================
 
 echo ============================================
 echo  Instalando dependencias...
@@ -21,6 +35,12 @@ echo ============================================
     --collect-all pdfplumber ^
     --collect-all openpyxl ^
     --distpath "%DIR_PROYECTO%dist" ^
+    --collect-all pandas ^
+    --hidden-import procesador ^
+    --hidden-import gui ^
+    --hidden-import generador_word ^
+    --hidden-import generador_excel ^
+    --hidden-import generador_oficio ^
     "%DIR_PROYECTO%main.py"
 
 echo.
@@ -63,4 +83,3 @@ echo  Proceso finalizado.
 echo  Tu aplicacion esta lista en:
 echo  %DIR_DIST%\main.exe
 echo ============================================
-pause
