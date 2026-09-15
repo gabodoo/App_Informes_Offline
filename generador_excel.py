@@ -3,9 +3,15 @@ from pathlib import Path
 import openpyxl
 
 def get_base_dir() -> Path:
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).parent
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() == "main" and exe_dir.parent.name.lower() == "dist":
+            return exe_dir.parent.parent
+        if exe_dir.name.lower() == "dist":
+            return exe_dir.parent
+        return exe_dir
     return Path(__file__).resolve().parent
+
 
 class GeneradorExcel:
     """Clase para la generación de la Notificación Excel a partir de su plantilla."""
@@ -116,80 +122,237 @@ class GeneradorExcel:
         wb.save(ruta_salida)
         return ruta_salida
 
-    def generar_multiple(self, super_contexto: dict, log_callback=None) -> Path:
+    def generar_multiple(self, super_contexto: dict, log_callback=None) -> list[Path]:
         def log(msg):
             if log_callback: log_callback(msg)
 
-        self.ruta_plantilla = get_base_dir() / "plantillas" / "plantilla_notificacion_multiple.xlsx"
-        if not self.ruta_plantilla.exists():
-            log(f"No se encontró la plantilla múltiple en {self.ruta_plantilla}")
-            raise FileNotFoundError(f"Falta plantilla: {self.ruta_plantilla}")
+        becarios = super_contexto.get("becarios", [])
+        becarios_casilla = [b for b in becarios if b.get("AUTORIZA_CASILLA")]
+        becarios_normales = [b for b in becarios if not b.get("AUTORIZA_CASILLA")]
 
-        log("Cargando plantilla de notificación Excel múltiple...")
-        wb = openpyxl.load_workbook(self.ruta_plantilla)
+        rutas_generadas = []
+
+        if becarios_casilla:
+            log(f"Se detectaron {len(becarios_casilla)} becario(s) con autorización de casilla electrónica.")
+            ruta_cas = self.generar_casilla_multiple(super_contexto, becarios_casilla, log_callback=log_callback)
+            if ruta_cas:
+                rutas_generadas.append(ruta_cas)
+
+        if becarios_normales:
+            log(f"Se detectaron {len(becarios_normales)} becario(s) para notificación por correo electrónico.")
+            ruta_norm = self.generar_correo_multiple(super_contexto, becarios_normales, log_callback=log_callback)
+            if ruta_norm:
+                rutas_generadas.append(ruta_norm)
+
+        return rutas_generadas
+
+    def generar_casilla_multiple(self, super_contexto: dict, becarios: list, log_callback=None) -> Path:
+        def log(msg):
+            if log_callback: log_callback(msg)
+
+        ruta_plantilla = get_base_dir() / "plantillas" / "plantilla_notificacion_casilla_multiple.xlsx"
+        if not ruta_plantilla.exists():
+            ruta_plantilla = get_base_dir() / "plantillas" / "plantilla_notificacion_casilla.xlsx"
+
+        if not ruta_plantilla.exists():
+            log(f"No se encontró la plantilla de casilla múltiple en {ruta_plantilla}")
+            raise FileNotFoundError(f"Falta plantilla: {ruta_plantilla}")
+
+        log("Cargando plantilla de notificación Excel casilla múltiple...")
+        from copy import copy
+        import re
+
+        wb = openpyxl.load_workbook(ruta_plantilla)
         ws = wb.active
-        
-        # Guardamos el formato y valores base de la primera fila de datos (asumimos fila 3)
+
         fila_base = 3
-        valores_base = [ws.cell(row=fila_base, column=c).value for c in range(1, 14)]
-        
-        # Limpiar filas posteriores si existen en la plantilla
-        for r in range(ws.max_row, fila_base, -1):
+        valores_base = [ws.cell(row=fila_base, column=c).value for c in range(1, 12)]
+
+        filas_necesarias = len(becarios)
+        ultima_fila_requerida = fila_base + max(filas_necesarias, 1) - 1
+        for r in range(ws.max_row, ultima_fila_requerida, -1):
             ws.delete_rows(r)
-            
+
         num_inf = super_contexto.get("NUMERO_INFORME_GENERAR", "")
-        informe_generado = f"INFORME N° {num_inf}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
+        informe_generado = f"INFORME Nº {num_inf}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
         sigedo_global = super_contexto.get("NUMERO_SIGEDO_GLOBAL", "")
 
-        for i, becario in enumerate(super_contexto.get("becarios", [])):
+        def clonar_estilo(origen, destino):
+            if origen.has_style:
+                destino.font = copy(origen.font)
+                destino.border = copy(origen.border)
+                destino.fill = copy(origen.fill)
+                destino.number_format = copy(origen.number_format)
+                destino.protection = copy(origen.protection)
+                destino.alignment = copy(origen.alignment)
+
+        base_height = ws.row_dimensions[fila_base].height or 63.75
+
+        # Col 8 (H): N° DE DOCUMENTO
+        desc_doc_base = str(valores_base[7] or "")
+        patron_doc = re.compile(r"INFORME N[°ºo\.]?\s*\d*-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS", re.IGNORECASE)
+        if patron_doc.search(desc_doc_base):
+            col_h_mod = patron_doc.sub(informe_generado, desc_doc_base)
+        else:
+            col_h_mod = re.sub(r"INFORME N[°ºo\.]?\s*\d+", f"INFORME Nº {num_inf}", desc_doc_base, flags=re.IGNORECASE)
+            if col_h_mod == desc_doc_base and "INFORME" in desc_doc_base.upper():
+                col_h_mod = f"OFICIO Nº xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC, {informe_generado}"
+
+        for i, becario in enumerate(becarios):
             fila_actual = fila_base + i
-            
-            dni = becario.get("DNI_VALIDADO", "")
+            ws.row_dimensions[fila_actual].height = base_height
+
+            dni = str(becario.get("DNI_VALIDADO", "")).strip()
+            dni_val = int(dni) if dni.isdigit() else dni
+
             n_bec = str(becario.get("NOMBRES_BECARIO", "")).strip()
             a_bec = str(becario.get("APELLIDOS_BECARIO", "")).strip()
             nombres = f"{n_bec} {a_bec}".strip()
             if not nombres:
                 nombres = str(becario.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
-            correo = becario.get("CORREO_ELECTRONICO", "")
-            tel = becario.get("TELEFONO_CONTACTO", "")
-            
-            # Col A: N°
-            ws.cell(row=fila_actual, column=1, value=i+1)
-            # Col B: SIGEDO
-            ws.cell(row=fila_actual, column=2, value=sigedo_global)
-            # Col C: DNI
-            ws.cell(row=fila_actual, column=3, value=dni)
-            # Col D: OFICINA REMITENTE
-            ws.cell(row=fila_actual, column=4, value=valores_base[3] if len(valores_base) > 3 else "SUBDIRECCIÓN DE SEGUIMIENTO Y SUPERVISIÓN")
-            # Col E: DESTINATARIO
-            ws.cell(row=fila_actual, column=5, value=nombres)
-            # Col F: TIPIFICACIÓN
-            ws.cell(row=fila_actual, column=6, value=valores_base[5] if len(valores_base) > 5 else "")
-            # Col G: N° DE DOCUMENTO
-            ws.cell(row=fila_actual, column=7, value=valores_base[6] if len(valores_base) > 6 else "")
-            
-            # Col H: DESCRIPCIÓN
-            desc_original = str(valores_base[7] if len(valores_base) > 7 else "")
-            import re
-            desc_mod = re.sub(r"INFORME N[°ºo]\s*\d+-\d+-MINEDU/VMGI-PRONABEC-DIBEC-SUS", informe_generado, desc_original, flags=re.IGNORECASE)
-            ws.cell(row=fila_actual, column=8, value=desc_mod)
-            
-            # Col I: CORREO
-            ws.cell(row=fila_actual, column=9, value=correo)
-            # Col J: TELEFONO
-            ws.cell(row=fila_actual, column=10, value=tel)
-            # Col K: ITEM ARCHIVO
-            ws.cell(row=fila_actual, column=11, value=i+1)
-            # Col L: OBSERVACIONES
-            ws.cell(row=fila_actual, column=12, value=valores_base[11] if len(valores_base) > 11 else "")
-            # Col M: TIPO DE NOTIFICACIÓN
-            ws.cell(row=fila_actual, column=13, value=valores_base[12] if len(valores_base) > 12 else "2. COMUNICACIÓN")
+
+            exp_bec = becario.get("EXPEDIENTE_BECARIO") or becario.get("EXPEDIENTE") or becario.get("NUMERO_EXPEDIENTE", "")
+            exp_bec_val = int(exp_bec) if str(exp_bec).isdigit() else exp_bec
+
+            sigedo_val = super_contexto.get("NUMERO_SIGEDO_GLOBAL") or becario.get("NUMERO_SIGEDO", "")
+
+            tel = str(becario.get("TELEFONO_CONTACTO", "")).strip() or "-"
+            tel_val = int(tel) if tel.isdigit() else tel
+
+            valores_fila = [
+                i + 1,                               # 1: N°
+                dni_val,                             # 2: DNI
+                nombres,                             # 3: NOMBRE COMPLETO
+                exp_bec_val,                         # 4: N° EXPEDIENTE DE BECARIO
+                sigedo_val,                          # 5: SIGEDO
+                valores_base[5],                     # 6: OFICINA/UNIDAD
+                valores_base[6],                     # 7: TIPIFICACION - TITULO
+                col_h_mod,                           # 8: N° DE DOCUMENTO
+                valores_base[8],                     # 9: DESCRIPCIÓN
+                valores_base[9],                     # 10: OBSERVACIONES
+                tel_val,                             # 11: TELEFONO
+            ]
+
+            for c in range(1, 12):
+                target_cell = ws.cell(row=fila_actual, column=c)
+                ref_cell = ws.cell(row=fila_base, column=c)
+                if fila_actual != fila_base:
+                    clonar_estilo(ref_cell, target_cell)
+                target_cell.value = valores_fila[c - 1]
+
+        nombre_salida = f"{sigedo_global}_notificacion_casilla_multiple.xlsx"
+        ruta_salida = get_base_dir() / "Informes_Generados" / nombre_salida
+        ruta_salida.parent.mkdir(parents=True, exist_ok=True)
+
+        log(f"Guardando Notificación Casilla Múltiple en: {ruta_salida.name}")
+        wb.save(ruta_salida)
+        return ruta_salida
+
+    def generar_correo_multiple(self, super_contexto: dict, becarios: list, log_callback=None) -> Path:
+        def log(msg):
+            if log_callback: log_callback(msg)
+
+        ruta_plantilla = get_base_dir() / "plantillas" / "plantilla_notificacion_multiple.xlsx"
+        if not ruta_plantilla.exists():
+            log(f"No se encontró la plantilla múltiple en {ruta_plantilla}")
+            raise FileNotFoundError(f"Falta plantilla: {ruta_plantilla}")
+
+        log("Cargando plantilla de notificación Excel múltiple...")
+        from copy import copy
+        import re
+
+        wb = openpyxl.load_workbook(ruta_plantilla)
+        ws = wb.active
+
+        fila_base = 3
+        valores_base = [ws.cell(row=fila_base, column=c).value for c in range(1, 14)]
+
+        filas_necesarias = len(becarios)
+
+        # Limpiar filas posteriores de la plantilla que excedan el número de becarios
+        ultima_fila_requerida = fila_base + max(filas_necesarias, 1) - 1
+        for r in range(ws.max_row, ultima_fila_requerida, -1):
+            ws.delete_rows(r)
+
+        num_inf = super_contexto.get("NUMERO_INFORME_GENERAR", "")
+        informe_generado = f"Informe Nº {num_inf}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
+        sigedo_global = super_contexto.get("NUMERO_SIGEDO_GLOBAL", "")
+
+        def clonar_estilo(origen, destino):
+            if origen.has_style:
+                destino.font = copy(origen.font)
+                destino.border = copy(origen.border)
+                destino.fill = copy(origen.fill)
+                destino.number_format = copy(origen.number_format)
+                destino.protection = copy(origen.protection)
+                destino.alignment = copy(origen.alignment)
+
+        base_height = ws.row_dimensions[fila_base].height or 63.75
+
+        # Preparar Col K (NUMERO DE (ITEM) DEL ARCHIVO PARA ADJUNTAR EN EL CORREO)
+        # Se toma la información base de la plantilla y solo se actualiza el Informe SUS (literal a / ítem I),
+        # conservando la información del literal b / ítem II correspondiente al Oficio.
+        raw_col_k = str(valores_base[10] or "")
+        patron_col_k = re.compile(r"(Informe[^\d]*?)\d+([^,]*?DIBEC-SUS)", re.IGNORECASE)
+        if patron_col_k.search(raw_col_k):
+            col_k_mod = patron_col_k.sub(rf"\g<1>{num_inf}\g<2>", raw_col_k)
+        elif any(n in raw_col_k for n in ["6757", "6539", "6541"]):
+            col_k_mod = re.sub(r"\b(?:6757|6539|6541)\b", str(num_inf), raw_col_k)
+        elif raw_col_k:
+            col_k_mod = raw_col_k
+        else:
+            col_k_mod = f"I) {informe_generado}, II) Oficio Nº xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC"
+
+        # Preparar Col H (DESCRIPCIÓN - MENSAJE DE EMISIÓN)
+        desc_orig = str(valores_base[7] or "")
+        patron_desc = re.compile(r"(Informe[^\d]*?)\d+([^,]*?DIBEC-SUS)", re.IGNORECASE)
+        if patron_desc.search(desc_orig):
+            desc_mod = patron_desc.sub(rf"\g<1>{num_inf}\g<2>", desc_orig)
+        else:
+            desc_mod = desc_orig
+
+        for i, becario in enumerate(becarios):
+            fila_actual = fila_base + i
+            ws.row_dimensions[fila_actual].height = base_height
+
+            dni = str(becario.get("DNI_VALIDADO", "")).strip()
+            n_bec = str(becario.get("NOMBRES_BECARIO", "")).strip()
+            a_bec = str(becario.get("APELLIDOS_BECARIO", "")).strip()
+            nombres = f"{n_bec} {a_bec}".strip()
+            if not nombres:
+                nombres = str(becario.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
+            correo = str(becario.get("CORREO_ELECTRONICO", "")).strip()
+            tel = str(becario.get("TELEFONO_CONTACTO", "")).strip() or "-"
+
+            dni_val = int(dni) if dni.isdigit() else dni
+
+            valores_fila = [
+                i + 1,                               # 1: N°
+                sigedo_global,                       # 2: SIGEDO
+                dni_val,                             # 3: DNI
+                valores_base[3],                     # 4: OFICINA REMITENTE
+                nombres,                             # 5: DESTINATARIO
+                valores_base[5],                     # 6: TIPIFICACIÓN - ASUNTO
+                valores_base[6],                     # 7: N° DE DOCUMENTO
+                desc_mod,                            # 8: DESCRIPCIÓN - MENSAJE DE EMISIÓN
+                correo,                              # 9: CORREO ELECTRÓNICO
+                tel,                                 # 10: TELÉFONO
+                col_k_mod,                           # 11: NUMERO DE (ITEM) DEL ARCHIVO PARA ADJUNTAR EN EL CORREO
+                valores_base[11],                    # 12: OBSERVACIONES
+                valores_base[12],                    # 13: TIPO DE NOTIFICACIÓN
+            ]
+
+            for c in range(1, 14):
+                target_cell = ws.cell(row=fila_actual, column=c)
+                ref_cell = ws.cell(row=fila_base, column=c)
+                if fila_actual != fila_base:
+                    clonar_estilo(ref_cell, target_cell)
+                target_cell.value = valores_fila[c - 1]
 
         nombre_salida = f"{sigedo_global}_notificacion_multiple.xlsx"
         ruta_salida = get_base_dir() / "Informes_Generados" / nombre_salida
         ruta_salida.parent.mkdir(parents=True, exist_ok=True)
-        
+
         log(f"Guardando Notificación Múltiple en: {ruta_salida.name}")
         wb.save(ruta_salida)
         return ruta_salida
-
