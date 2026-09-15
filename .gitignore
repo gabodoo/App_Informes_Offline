@@ -18,6 +18,11 @@ Informes_Generados/
 Informes_Generados_Backup/
 *.pdf
 *.docx
+*.xlsx
+*.xls
+*.csv
+*.db
+*.sqlite
 
 # Excepciones
 !plantillas/*.docx

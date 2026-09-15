@@ -110,6 +110,9 @@ class AppInformes(ctk.CTk):
         self._btn_nuevo = ctk.CTkButton(toolbar, text="Nuevo", fg_color=self.COLOR_AZUL_CLARO, hover_color="#1f618d", text_color="white", font=ctk.CTkFont(size=13, weight="bold"), corner_radius=0, command=self._limpiar_para_nuevo_informe, state="disabled")
         self._btn_nuevo.pack(side="left", padx=2, fill="y", ipadx=10)
 
+        self._btn_abrir_carpeta = ctk.CTkButton(toolbar, text="📂 Abrir Carpeta", fg_color="#27ae60", hover_color="#1e8449", text_color="white", font=ctk.CTkFont(size=13, weight="bold"), corner_radius=0, command=self._abrir_carpeta_salida)
+        self._btn_abrir_carpeta.pack(side="left", padx=2, fill="y", ipadx=10)
+
 
         # --- Contenedor de Vistas ---
         self.main_container = ctk.CTkFrame(self, fg_color=self.COLOR_FONDO_BLANCO)
@@ -193,8 +196,7 @@ class AppInformes(ctk.CTk):
 
         self._crear_fila_seleccion(scrollable_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel_mult, comando=lambda: self._seleccionar_archivo(self._ruta_excel_mult, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
         self._crear_fila_seleccion(scrollable_frame, fila=2, etiqueta="Informe SUCCOR Compartido (.pdf)", variable=self._ruta_informe_succor_mult, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor_mult, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR (Múltiples becarios)...")
-        self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico_mult, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico_mult, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
-        self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies_mult, comando=lambda: self._seleccionar_archivo(self._ruta_documento_ies_mult, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta emitida por la IES...")
+        self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies_mult, comando=lambda: self._seleccionar_archivos(self._ruta_documento_ies_mult, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("PDF", "*.pdf"), ("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta de la IES (uno o varios PDFs, o Excel)...")
         
         # Sección dinámica para Formatos Autogenerados
         separator = ctk.CTkFrame(scrollable_frame, height=2, fg_color=self.COLOR_BORDE)
@@ -307,7 +309,29 @@ class AppInformes(ctk.CTk):
             variable.set(ruta)
             self._log(f"{titulo} seleccionado: {ruta}")
 
+    def _seleccionar_archivos(self, variable: tk.StringVar, titulo: str, tipos: list) -> None:
+        rutas = filedialog.askopenfilenames(
+            title=f"Seleccionar {titulo} (puede seleccionar uno o varios archivos)",
+            filetypes=tipos,
+        )
+        if rutas:
+            variable.set("; ".join(rutas))
+            self._log(f"{titulo} seleccionado(s): {len(rutas)} archivo(s)")
+
     # --- Lógica principal ---
+
+    def _abrir_carpeta_salida(self) -> None:
+        try:
+            from generador_word import SALIDA_DIR
+            salida = SALIDA_DIR
+        except Exception:
+            salida = Path("Informes_Generados").resolve()
+        salida.mkdir(parents=True, exist_ok=True)
+        try:
+            import os
+            os.startfile(str(salida))
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo abrir la carpeta:\n{e}")
 
     def _limpiar_para_nuevo_informe(self) -> None:
         if self._modo_actual == "individual":
@@ -448,22 +472,38 @@ class AppInformes(ctk.CTk):
                 
             rutas_str = "\n".join(str(r.name) for r in rutas_generadas) if rutas_generadas else "(Sin archivos)"
             
-            # Solo mostrar warning si hubo procesador instanciado y tiene advertencias
-            if self._modo_actual == "individual" and hasattr(procesador, 'advertencias') and procesador.advertencias:
+            # Mostrar ventana emergente de advertencia al concluir si hay alertas (Individual y Múltiple)
+            if hasattr(procesador, 'advertencias') and procesador.advertencias:
                 adv_text = "\n\n".join(procesador.advertencias)
                 self.after(
                     0,
                     lambda m=adv_text: messagebox.showwarning("Atención", m)
                 )
 
+            salida_dir = None
+            if rutas_generadas:
+                salida_dir = rutas_generadas[0].parent
+            else:
+                try:
+                    from generador_word import SALIDA_DIR
+                    salida_dir = SALIDA_DIR
+                except Exception:
+                    salida_dir = Path('Informes_Generados').resolve()
+
             self.after(
                 0,
                 lambda: messagebox.showinfo(
-                    "Completado",
-                    f"Operación finalizada. Archivos:\n\n{rutas_str}",
+                    'Completado',
+                    f'Operación finalizada.\n\nCarpeta de salida:\n{salida_dir}\n\nArchivos:\n{rutas_str}',
                 ),
             )
-            self.after(0, lambda: self._btn_nuevo.configure(state="normal"))
+            self.after(0, lambda: self._btn_nuevo.configure(state='normal'))
+            if salida_dir and salida_dir.exists():
+                try:
+                    import os
+                    os.startfile(str(salida_dir))
+                except Exception:
+                    pass
         except (BecarioNoEncontradoIESException, FechaFinInsuficienteException, BecarioNoCulminariaAmpliacionException) as e:
             self._log(f"ADVERTENCIA: {e}")
             msg = str(e)

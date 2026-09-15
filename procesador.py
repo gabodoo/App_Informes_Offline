@@ -46,6 +46,37 @@ MESES_NUM.update({
 })
 
 
+def formatear_fechas_solicitud(fechas: list) -> str:
+    """Formatea y concatena cronológicamente fechas de solicitudes sin duplicados.
+    Ej: '31 de julio y 1 de agosto de 2026' o '31 de julio, 1 de agosto y 2 de agosto de 2026'."""
+    if not fechas:
+        return ""
+    fechas_unicas = sorted(list({f for f in fechas if f is not None}))
+    if not fechas_unicas:
+        return ""
+    meses = [
+        "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+    ]
+    mismo_anio = len({f.year for f in fechas_unicas}) == 1
+    if mismo_anio:
+        anio = fechas_unicas[0].year
+        partes = [f"{f.day} de {meses[f.month]}" for f in fechas_unicas]
+        if len(partes) == 1:
+            return f"{partes[0]} de {anio}"
+        elif len(partes) == 2:
+            return f"{partes[0]} y {partes[1]} de {anio}"
+        else:
+            return f"{', '.join(partes[:-1])} y {partes[-1]} de {anio}"
+    else:
+        partes = [f"{f.day} de {meses[f.month]} de {f.year}" for f in fechas_unicas]
+        if len(partes) == 1:
+            return partes[0]
+        elif len(partes) == 2:
+            return f"{partes[0]} y {partes[1]}"
+        else:
+            return f"{', '.join(partes[:-1])} y {partes[-1]}"
+
 def fecha_a_texto(d: date) -> str:
     """Convierte un objeto date a texto español. Ej: '15 de julio de 2026'."""
     return f"{d.day} de {MESES_ES[d.month]} de {d.year}"
@@ -215,18 +246,35 @@ class ExtractorFormatoAutogenerado:
         re.IGNORECASE,
     )
     PATRON_CASILLA = re.compile(
-        r"Autorizo recibir la respuesta por casilla electr[oó]nica",
+        r"Autorizo\s+(?:a\s+)?recibir\s+la\s+respuesta\s+por\s+casilla\s+electr[oó]nica"
+        r"|Autorizo\s+recibir\s+la\s+respuesta\s+a\s+(?:la\s+)?casilla\s+electr[oó]nica"
+        r"|Autorizo\s+(?:la\s+)?notificaci[oó]n\s+por\s+casilla\s+electr[oó]nica",
         re.IGNORECASE,
     )
     PATRON_TELEFONO = re.compile(
         r"(?:Tel[eé]fono|Celular)\s*[:\s]+(\d{7,12})",
         re.IGNORECASE,
     )
+    PATRON_DNI = re.compile(
+        r"DNI\s*[-–:]*\s*(\d{8})",
+        re.IGNORECASE,
+    )
+    PATRON_REMITENTE_DNI = re.compile(
+        r"([A-Za-zÁÉÍÓÚáéíóúÑñ\s,]+?)\s+DNI\s*[-–:]*\s*(\d{8})",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def extraer(cls, ruta_pdf: str | Path) -> dict:
         ruta = Path(ruta_pdf)
-        resultado = {"fecha_solicitud": None, "fecha_solicitud_texto": "", "numero_expediente": "", "correo_electronico": ""}
+        resultado = {
+            "fecha_solicitud": None,
+            "fecha_solicitud_texto": "",
+            "numero_expediente": "",
+            "correo_electronico": "",
+            "dni": "",
+            "nombres": "",
+        }
 
         with pdfplumber.open(ruta) as pdf:
             texto_completo = "\n".join(
@@ -290,6 +338,16 @@ class ExtractorFormatoAutogenerado:
         else:
             resultado["telefono_contacto"] = ""
 
+        # Extraer DNI y Nombres del formato autogenerado
+        m_rem = cls.PATRON_REMITENTE_DNI.search(texto_completo)
+        if m_rem:
+            resultado["nombres"] = m_rem.group(1).strip().replace("\n", " ")
+            resultado["dni"] = m_rem.group(2).strip()
+        else:
+            m_dni = cls.PATRON_DNI.search(texto_completo)
+            if m_dni:
+                resultado["dni"] = m_dni.group(1).strip()
+
         resultado["raw_text"] = texto_completo
         return resultado
 
@@ -305,7 +363,7 @@ class ExtractorInformeSuccor:
         re.IGNORECASE,
     )
     PATRON_SIGEDO = re.compile(
-        r"(?:SIGEDO|Expediente|CUT|Trámite|Tramite)\s*(?:N[°ºo\.]?\s*)?([A-Z0-9\.\-]{4,18})",
+        r"(?:SIGEDO|Expediente|CUT|Trámite|Tramite)\s*(?:N[°ºo\.]?\s*)?([A-Z0-9\.\-]*\d[A-Z0-9\.\-]*)",
         re.IGNORECASE,
     )
     PATRONES_DNI_TEXTO = [
@@ -334,9 +392,11 @@ class ExtractorInformeSuccor:
     )
     # Palabras clave para detectar la columna "Cursos Pendientes según la IES" en las tablas del SUCCOR
     PALABRAS_COLUMNA_CURSOS_IES = (
-        "cursos pendientes seg",  # cubre "según" con o sin tilde
-        "cursos pendientes segun",
-        "cursos pendientes de la ies",
+        "cursos pendientes",
+        "cursos que tiene",
+        "cursos a culminar",
+        "cursos faltantes",
+        "asignaturas pendientes",
         "cursos seg",
         "pendientes ies",
         "pendientes seg",
@@ -344,6 +404,27 @@ class ExtractorInformeSuccor:
         "según la ies",
         "cursos ies",
     )
+
+    @classmethod
+    def limpiar_nombre_succor(cls, nom: str) -> str:
+        """Limpia el nombre del informe SUCCOR y asegura que termine estrictamente en 'LIMA'."""
+        if not nom:
+            return ""
+        nom = cls._limpiar(nom)
+        nom = re.sub(r"^\s*(?:INFORME|Informe)\s+(?:N[°o\.]*|N\.o|No\.?|NRO\.?|NÚMERO|NUMERO)?\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+        if not nom.startswith("Informe N° ") and re.match(r"^\s*(?:INFORME|Informe)\b", nom, re.I):
+            nom = re.sub(r"^\s*(?:INFORME|Informe)\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+        
+        # Regla del usuario: El informe de la SUCCOR termina siempre en 'LIMA'
+        m_lima = re.search(r"^(.*?SUCCOR[-\s/]*LIMA)\b", nom, flags=re.IGNORECASE)
+        if m_lima:
+            nom = m_lima.group(1).strip()
+        else:
+            m_lima2 = re.search(r"^(.*?\bLIMA)\b", nom, flags=re.IGNORECASE)
+            if m_lima2 and "SUCCOR" in nom.upper():
+                nom = m_lima2.group(1).strip()
+        nom = re.sub(r"(\bLIMA\b)[\s\w\.\-]*$", r"\1", nom, flags=re.IGNORECASE).strip()
+        return nom
 
     @classmethod
     def extraer(cls, ruta_pdf: str | Path) -> dict:
@@ -409,6 +490,15 @@ class ExtractorInformeSuccor:
                 if m_flex:
                     resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
                     resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+
+        if resultado.get("nombre_informe_succor"):
+            nom = resultado["nombre_informe_succor"]
+            nom = re.sub(r"^\s*(?:INFORME|Informe)\s+(?:N[º°o\.]*|N\.o|No)\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+            if not nom.startswith("Informe N° ") and re.match(r"^\s*(?:INFORME|Informe)\b", nom, re.I):
+                nom = re.sub(r"^\s*(?:INFORME|Informe)\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+            nom = cls.limpiar_nombre_succor(nom)
+            resultado["nombre_informe_succor"] = nom
+            resultado["numero_informe"] = nom
 
         # SIGEDO
         m = cls.PATRON_SIGEDO.search(texto_completo)
@@ -677,12 +767,45 @@ class ExtractorInformeSuccor:
         
         m = cls.PATRON_NOMBRE_INFORME.search(texto_completo)
         if m:
-            resultado["nombre_informe_succor"] = cls._limpiar(m.group(1))
-            resultado["numero_informe"] = cls._limpiar(m.group(1))
+            inf_nombre = cls._limpiar(m.group(1))
+            resultado["nombre_informe_succor"] = inf_nombre
+            resultado["numero_informe"] = inf_nombre
+            m_num = re.search(r"(\d+-\d{4})", inf_nombre)
+            if m_num:
+                resultado["numero_sigedo"] = m_num.group(1)
+        else:
+            texto_lower = texto_completo.lower()
+            mejor_pos = texto_lower.find("succor")
+            if mejor_pos != -1:
+                zona = texto_completo[max(0, mejor_pos - 400): mejor_pos + 400]
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|º|°|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(zona)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+            
+            if not resultado["nombre_informe_succor"]:
+                patron_flexible = re.compile(r"(INFORME\s+(?:N(?:ro|RO|\.|º|°|\.o|o\.?|o)?|NÚMERO|NUMERO|N)?\s*[\d]+[-/\d]+[A-Z0-9/\-\.]+)", re.IGNORECASE)
+                m_flex = patron_flexible.search(texto_completo)
+                if m_flex:
+                    resultado["nombre_informe_succor"] = cls._limpiar(m_flex.group(1))
+                    resultado["numero_informe"] = cls._limpiar(m_flex.group(1))
+                    
+        inf_nombre_file = Path(ruta_pdf).stem
+        if not resultado["nombre_informe_succor"]:
+            resultado["nombre_informe_succor"] = inf_nombre_file
+        m_num = re.search(r"(\d+-\d{4})", inf_nombre_file)
+        if m_num and not resultado.get("numero_sigedo"):
+            resultado["numero_sigedo"] = m_num.group(1)
         
-        m = cls.PATRON_SIGEDO.search(texto_completo)
-        if m:
-            resultado["numero_sigedo"] = m.group(1)
+        # Extracción prioritaria de SIGEDO del texto completo (ej. "SIGEDO: 61582-2026" o "EXPEDIENTE: 61582-2026")
+        m_sig = re.search(r'\b(?:SIGEDO|EXPEDIENTE|EXP|CUT)\s*[:\.]?\s*(?:N[ºo\.]?\s*)?([0-9]{4,8}(?:-\d{4})?)', texto_completo, re.IGNORECASE)
+        if m_sig:
+            resultado["numero_sigedo"] = re.sub(r"\s*-\s*", "-", m_sig.group(1).strip())
+        elif not resultado.get("numero_sigedo"):
+            m = cls.PATRON_SIGEDO.search(texto_completo)
+            if m:
+                resultado["numero_sigedo"] = m.group(1)
             
         for m in cls.PATRON_SEMESTRE.finditer(texto_completo):
             resultado["semestre_solicitado"] = f"{m.group(1)}-{m.group(2)}"
@@ -730,9 +853,33 @@ class ExtractorInformeSuccor:
                                 if c: bec["cursos_pendientes_ies"].append(formatear_curso_oracion(c))
                     
                     if bec["expediente"] or bec["dni"] or bec["nombre"]:
-                        resultado["becarios"].append(bec)
+                        dni_k = bec["dni"]
+                        exp_k = bec["expediente"]
+                        existente = None
+                        if dni_k:
+                            existente = next((x for x in resultado["becarios"] if x.get("dni") == dni_k), None)
+                        elif exp_k:
+                            existente = next((x for x in resultado["becarios"] if x.get("expediente") == exp_k), None)
+                        
+                        if existente:
+                            if not existente.get("expediente") and bec.get("expediente"):
+                                existente["expediente"] = bec["expediente"]
+                            if not existente.get("nombre") and bec.get("nombre"):
+                                existente["nombre"] = bec["nombre"]
+                            if not existente.get("cursos_pendientes_ies") and bec.get("cursos_pendientes_ies"):
+                                existente["cursos_pendientes_ies"] = bec["cursos_pendientes_ies"]
+                        else:
+                            resultado["becarios"].append(bec)
 
         resultado["raw_text"] = texto_completo
+        if resultado.get("nombre_informe_succor"):
+            nom = resultado["nombre_informe_succor"]
+            nom = re.sub(r"^\s*(?:INFORME|Informe)\s+(?:N[º°o\.]*|N\.o|No)\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+            if not nom.startswith("Informe N° ") and re.match(r"^\s*(?:INFORME|Informe)\b", nom, re.I):
+                nom = re.sub(r"^\s*(?:INFORME|Informe)\s*", "Informe N° ", nom, flags=re.IGNORECASE)
+            nom = cls.limpiar_nombre_succor(nom)
+            resultado["nombre_informe_succor"] = nom
+            resultado["numero_informe"] = nom
         return resultado
 
 class ExtractorCalendarioAcademico:
@@ -911,18 +1058,191 @@ class ExtractorCalendarioAcademico:
 # EXTRACTOR DOCUMENTO IES (EXCEL)
 # ============================================================
 class ExtractorDocumentoIESExcel:
-    """Extrae cursos pendientes de un archivo Excel de la IES validando DNI y nombres."""
+    """Extrae cursos pendientes de un archivo Excel de la IES validando DNI, nombres y expedientes."""
     
     PATRON_CODIGO = re.compile(r"\b([A-Z0-9]{2,}[\.\-][A-Z0-9\.\-]{2,}[\.\-][A-Z0-9\.\-]{2,})\b", re.IGNORECASE)
-    PATRON_CODIGO_ALT = re.compile(r"(CARTA|OFICIO|MEMORANDO|CONSTANCIA|NOTA|COMUNICADO)\s+N[°ºo\.]?\s*([\d\w/\.\-]+)", re.IGNORECASE)
-    PATRON_FECHA = re.compile(r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})", re.IGNORECASE)
+    PATRON_CODIGO_ALT = re.compile(r"(CARTA|OFICIO|MEMORANDO|CONSTANCIA|NOTA|COMUNICADO)\s+N[ºo\.]?\s*([\d\w/\.\-]+)", re.IGNORECASE)
+    PATRON_FECHA = re.compile(r"(\d{1,2})\s+de\s+([a-zA-ZñÑáéíóúÁÉÍÓÚ]+)(?:\s+de(?:l)?)?\s+(\d{4})", re.IGNORECASE)
+
+    @classmethod
+    def _norm(cls, texto: str) -> str:
+        t = str(texto or "").upper()
+        repls = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N", "Ü": "U"}
+        for k, v in repls.items():
+            t = t.replace(k, v)
+        return re.sub(r"[^A-Z0-9]+", " ", t).strip()
+
+    @classmethod
+    @classmethod
+    def limpiar_y_separar_cursos(cls, cursos_raw_list: list[str]) -> list[str]:
+        """Separa y limpia los cursos eliminando numeraciones, viñetas y duplicados, soportando comas y punto y coma."""
+        cursos_finales = []
+        for raw in cursos_raw_list:
+            if not raw or str(raw).lower() == "nan":
+                continue
+            # Proteger comas internas en nombres conocidos como 'ECOLOGY, ENVIRONMENT'
+            s_prot = re.sub(r'\bECOLOGY\s*,\s*ENVIRONMENT', 'ECOLOGY###COMMA###ENVIRONMENT', str(raw), flags=re.IGNORECASE)
+            # Separar por comas fuera de paréntesis, punto y coma, saltos de línea o números correlativos
+            subitems = re.split(r",\s*(?![^()]*\))|;|[\r\n]+|(?<=\w)\s+(?=\d+[\.\)]\s+)", s_prot)
+            for sub in subitems:
+                sub = sub.replace("###COMMA###", ", ").strip()
+                sub = re.sub(r"^\s*(?:\d+[\.\)\-]?|[-•*])\s*", "", sub).strip()
+                if len(sub) > 2:
+                    cursos_finales.append(sub)
+        vistos = set()
+        unicos = []
+        for c in cursos_finales:
+            c_norm = cls._norm(c)
+            if c_norm not in vistos:
+                vistos.add(c_norm)
+                unicos.append(c)
+        return unicos
+
+    @classmethod
+    def extraer_bloques_estudiantes(cls, ruta_excel: str | Path, log: LogCallback | None = None) -> list[dict]:
+        """Extrae los bloques de estudiantes y sus cursos agrupando filas secundarias."""
+        _log = log or (lambda msg: None)
+        ruta = Path(ruta_excel)
+        todos_los_bloques = []
+
+        try:
+            excel_file = pd.ExcelFile(ruta, engine="openpyxl")
+            for sheet_name in excel_file.sheet_names:
+                raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None, dtype=str).fillna("")
+                if raw_df.empty:
+                    continue
+
+                header_idx = None
+                mejor_score = 0
+                for idx, row in raw_df.iloc[:50].iterrows():
+                    row_str = " ".join(str(val or "").upper() for val in row.values)
+                    score = 0
+                    if any(w in row_str for w in ["DNI", "DOCUMENTO", "IDENTIDAD", "DOC."]): score += 3
+                    if any(w in row_str for w in ["APELLIDO", "NOMBRE", "ESTUDIANTE", "ALUMNO", "BECARIO"]): score += 3
+                    if any(w in row_str for w in ["CURSO", "ASIGNATURA", "MATERIA", "PENDIENTE"]): score += 4
+                    if score > mejor_score and score >= 4:
+                        mejor_score = score
+                        header_idx = idx
+
+                if header_idx is None:
+                    continue
+
+                headers = [str(val or "").strip() for val in raw_df.iloc[header_idx].values]
+                df_sheet = raw_df.iloc[header_idx + 1:].copy()
+                df_sheet.columns = headers
+
+                col_dni = next((c for c in df_sheet.columns if "DNI" in cls._norm(c) or "DOCUMENTO" in cls._norm(c)), None)
+                col_nom = next((c for c in df_sheet.columns if any(w in cls._norm(c) for w in ["APELLIDOS", "NOMBRES", "BECARIO", "ESTUDIANTE"])), None)
+                col_sig = next((c for c in df_sheet.columns if any(w in cls._norm(c) for w in ["SIGEDO", "EXPEDIENTE"])), None)
+
+                # Heurística columna cursos
+                col_cursos = None
+                mejor_puntaje = 0
+                for c in df_sheet.columns:
+                    t = cls._norm(c).lower()
+                    puntaje = 0
+                    if any(p in t for p in ["curso", "asignatura", "materia"]): puntaje += 3
+                    if any(p in t for p in ["pendiente", "faltante", "aprobar", "llevar", "restante", "concluir"]): puntaje += 4
+                    if any(p in t for p in ["nombre", "detalle", "lista", "descripcion"]): puntaje += 1
+                    if any(p in t for p in ["aprobado", "concluido", "historico", "llevado", "numero", "cantidad", "total"]): puntaje -= 10
+                    if puntaje > mejor_puntaje:
+                        mejor_puntaje = puntaje
+                        col_cursos = c
+
+                if not col_cursos or mejor_puntaje < 4:
+                    col_cursos = next((c for c in df_sheet.columns if "CURSO" in cls._norm(c) and "PENDIENTE" in cls._norm(c) and "N" not in cls._norm(c)), None)
+
+                current_student = None
+                for _, row in df_sheet.iterrows():
+                    d_val = limpiar_dni(row[col_dni]) if col_dni else ""
+                    n_val = str(row[col_nom]).strip() if col_nom else ""
+                    s_val = str(row[col_sig]).strip().split(".")[0] if col_sig else ""
+                    c_val = str(row[col_cursos]).strip() if col_cursos else ""
+
+                    if d_val or (n_val and n_val.lower() != "nan" and len(cls._norm(n_val)) > 3):
+                        if current_student:
+                            current_student["cursos"] = cls.limpiar_y_separar_cursos(current_student["cursos"])
+                            todos_los_bloques.append(current_student)
+                        current_student = {
+                            "dni": d_val,
+                            "nombre": n_val,
+                            "sigedo": s_val,
+                            "cursos": []
+                        }
+                        if c_val and c_val.lower() != "nan":
+                            current_student["cursos"].append(c_val)
+                    elif current_student:
+                        if c_val and c_val.lower() != "nan":
+                            current_student["cursos"].append(c_val)
+
+                if current_student:
+                    current_student["cursos"] = cls.limpiar_y_separar_cursos(current_student["cursos"])
+                    todos_los_bloques.append(current_student)
+
+        except Exception as e:
+            _log(f"Error extrayendo bloques de estudiantes del Excel IES: {e}")
+
+        return todos_los_bloques
+
+    @classmethod
+    def buscar_cursos_estudiante(
+        cls,
+        bloques: list[dict],
+        dni: str = "",
+        nombres: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
+        log: LogCallback | None = None
+    ) -> tuple[list[str], str]:
+        """Busca a un becario en los bloques de la IES por DNI, Nombres o Expediente/Sigedo y retorna los cursos."""
+        _log = log or (lambda msg: None)
+        dni_clean = limpiar_dni(dni)
+        nombres_norm = cls._norm(nombres)
+        tokens_target = [t for t in nombres_norm.split() if len(t) > 2]
+        exp_list = [e for e in [str(expediente or "").strip().split(".")[0], str(expediente_padron or "").strip().split(".")[0]] if e]
+
+        # 1. Búsqueda por DNI
+        if dni_clean:
+            for b in bloques:
+                if b.get("dni") and (b["dni"] == dni_clean or b["dni"].endswith(dni_clean) or dni_clean.endswith(b["dni"])):
+                    _log(f"  [IES Excel] Becario hallado por DNI ({dni_clean}): {len(b['cursos'])} cursos")
+                    txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b["cursos"]))
+                    return b["cursos"], txt
+
+        # 2. Búsqueda por Sigedo / Expediente
+        if exp_list:
+            for b in bloques:
+                if b.get("sigedo") and b["sigedo"] in exp_list:
+                    _log(f"  [IES Excel] Becario hallado por Expediente/SIGEDO ({b['sigedo']}): {len(b['cursos'])} cursos")
+                    txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b["cursos"]))
+                    return b["cursos"], txt
+
+        # 3. Búsqueda por Nombres y Apellidos (coincidencia de tokens >= 2)
+        if tokens_target:
+            mejor = None
+            max_matches = 0
+            for b in bloques:
+                b_norm = cls._norm(b.get("nombre", ""))
+                matches = sum(1 for t in tokens_target if t in b_norm)
+                if matches > max_matches:
+                    max_matches = matches
+                    mejor = b
+            if mejor and max_matches >= 2:
+                _log(f"  [IES Excel] Becario hallado por Nombres ({mejor.get('nombre')}): {len(mejor['cursos'])} cursos")
+                txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(mejor["cursos"]))
+                return mejor["cursos"], txt
+
+        _log("  [IES Excel] Becario no encontrado en el documento de la IES.")
+        return [], ""
 
     @classmethod
     def extraer(
         cls,
         ruta_excel: str | Path,
-        dni_validado: str,
-        nombres_y_apellidos: str,
+        dni_validado: str = "",
+        nombres_y_apellidos: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
         log: LogCallback | None = None
     ) -> dict:
         _log = log or (lambda msg: None)
@@ -938,197 +1258,123 @@ class ExtractorDocumentoIESExcel:
 
         try:
             excel_file = pd.ExcelFile(ruta, engine="openpyxl")
-            sheet_dfs = []
             texto_primera_linea = ""
-            
             for sheet_name in excel_file.sheet_names:
                 raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None, dtype=str)
                 if raw_df.empty:
                     continue
-                    
-                if not texto_primera_linea:
-                    # Guardar la primera línea que contenga texto para buscar código y fecha
-                    texto_primera_linea = " ".join(str(v).strip() for v in raw_df.iloc[0].values if pd.notna(v) and str(v).strip())
-                header_idx = None
-                for idx, row in raw_df.iloc[:20].iterrows():
-                    row_str = " ".join(str(val or "").upper() for val in row.values)
-                    if "DNI" in row_str or "CURSOS PENDIENTES" in row_str:
-                        header_idx = idx
-                        break
-                
-                if header_idx is not None:
-                    headers = [str(val or "").strip() for val in raw_df.iloc[header_idx].values]
-                    df_sheet = raw_df.iloc[header_idx + 1:].copy()
-                else:
-                    df_sheet = raw_df.copy()
-                    headers = [str(c).strip() for c in df_sheet.iloc[0].values]
-                    df_sheet = df_sheet.iloc[1:]
-                
-                # Desduplicar headers para evitar error de Reindexing en pd.concat
-                seen = {}
-                unique_headers = []
-                for h in headers:
-                    if h in seen:
-                        seen[h] += 1
-                        unique_headers.append(f"{h}_{seen[h]}")
-                    else:
-                        seen[h] = 0
-                        unique_headers.append(h)
-                
-                df_sheet.columns = unique_headers
-                sheet_dfs.append(df_sheet)
-                    
-            if not sheet_dfs:
-                _log("No se pudo extraer información del Excel de la IES.")
-                return resultado
-                
-            # Procesar documento y fecha de la primera línea
+                texto_primera_linea = " ".join(str(v).strip() for v in raw_df.iloc[0].values if pd.notna(v) and str(v).strip())
+                if texto_primera_linea:
+                    break
+
+            # Metadatos del documento IES: Nombre completo y fecha de la primera línea
             if texto_primera_linea:
-                m_alt = cls.PATRON_CODIGO_ALT.search(texto_primera_linea)
-                if m_alt:
-                    tipo_doc = m_alt.group(1).strip().capitalize()
-                    codigo = m_alt.group(2).strip()
-                    resultado["codigo_doc_ies"] = f"{tipo_doc} N\u00b0 {codigo}"
-                else:
-                    m = cls.PATRON_CODIGO.search(texto_primera_linea)
-                    if m:
-                        resultado["codigo_doc_ies"] = m.group(1)
+                linea_clean = re.sub(r'\s+', ' ', texto_primera_linea).strip()
+                m_f = cls.PATRON_FECHA.search(linea_clean)
+                if not m_f:
+                    m_f = re.search(r'(\d{1,2})\s+de\s+([a-zA-ZñÑáéíóúÁÉÍÓÚ]+)(?:\s+de(?:l)?)?\s+(\d{4})', linea_clean, re.IGNORECASE)
                 
-                m_f = cls.PATRON_FECHA.search(texto_primera_linea)
+                fecha_encontrada = None
+                fecha_texto_encontrada = ""
+                doc_nombre_completo = ""
+
                 if m_f:
-                    fecha = texto_a_fecha(m_f.group(0))
-                    if fecha:
-                        resultado["fecha_doc_ies"] = fecha
-                        resultado["fecha_doc_ies_texto"] = fecha_a_texto(fecha)
-                if not resultado["fecha_doc_ies"]:
-                    m_corto = re.search(r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", texto_primera_linea)
-                    if m_corto:
-                        fecha = texto_a_fecha(m_corto.group(0))
-                        if fecha:
-                            resultado["fecha_doc_ies"] = fecha
-                            resultado["fecha_doc_ies_texto"] = fecha_a_texto(fecha)
-                
-            df_full = pd.concat(sheet_dfs, ignore_index=True).fillna("")
-            df_full.columns = [str(c).strip().upper() for c in df_full.columns]
-            
-            col_dni = next((c for c in df_full.columns if "DNI" in c or "DOCUMENTO" in c), None)
-            col_nom = next((c for c in df_full.columns if "APELLIDOS Y NOMBRES" in c or "BECARIO" in c or "NOMBRES Y APELLIDOS" in c or "NOMBRES" in c or "APELLIDOS" in c), None)
-            
-            # Lógica heurística para encontrar la columna de Cursos Pendientes
-            col_cursos = None
-            mejor_puntaje = 0
-            
-            for c in df_full.columns:
-                t = str(c).lower().replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
-                puntaje = 0
-                
-                # Grupo A (Sustantivo: +3)
-                if any(p in t for p in ["curso", "asignatura", "materia"]): puntaje += 3
-                # Grupo B (Condición: +4)
-                if any(p in t for p in ["pendiente", "faltante", "aprobar", "llevar", "restante", "concluir"]): puntaje += 4
-                # Grupo C (Contexto: +1)
-                if any(p in t for p in ["nombre", "detalle", "lista", "descripcion"]): puntaje += 1
-                # Grupo D (Excluyentes: -10)
-                if any(p in t for p in ["aprobado", "concluido", "historico", "llevado", "n°", "numero", "cantidad", "total"]): puntaje -= 10
-                    
-                if puntaje > mejor_puntaje:
-                    mejor_puntaje = puntaje
-                    col_cursos = c
-                    
-            # Umbral mínimo
-            if mejor_puntaje < 6:
-                col_cursos = None
-            else:
-                _log(f"Columna de cursos heurística: '{col_cursos}' (Puntaje: {mejor_puntaje})")
-            
-            if not col_dni or not col_cursos:
-                _log("No se encontraron las columnas necesarias (DNI o Cursos Pendientes) en el Excel de la IES.")
-                return resultado
-                
-            def _norm(texto: str) -> str:
-                t = str(texto).upper()
-                repls = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N", "Ü": "U"}
-                for k, v in repls.items():
-                    t = t.replace(k, v)
-                return re.sub(r"[^A-Z0-9]+", " ", t).strip()
-            
-            nombre_target = _norm(nombres_y_apellidos)
-            tokens_target = [t for t in nombre_target.split() if len(t) > 2]
-            dni_clean = limpiar_dni(dni_validado)
-            
-            mejor_fila = None
-            max_matches = 0
-            
-            for idx, row in df_full.iterrows():
-                row_dni = limpiar_dni(row[col_dni])
-                if row_dni == dni_clean:
-                    if col_nom:
-                        row_nom = _norm(row[col_nom])
-                        matches = sum(1 for t in tokens_target if t in row_nom)
-                        if matches > max_matches or mejor_fila is None:
-                            max_matches = matches
-                            mejor_fila = row
-                    else:
-                        mejor_fila = row
-                        break
-                        
-            if mejor_fila is not None:
-                if max_matches < 2 and col_nom:
-                    _log(f"ADVERTENCIA: DNI encontrado en IES, pero los nombres no coinciden lo suficiente. (Coincidencias: {max_matches})")
+                    fecha_texto_encontrada = m_f.group(0).strip()
+                    fecha_encontrada = texto_a_fecha(fecha_texto_encontrada)
+                    doc_nombre_completo = linea_clean[:m_f.start()].strip()
+                    doc_nombre_completo = re.sub(r'[,;\s]+(?:de\s+|con\s+)?fecha\s*$', '', doc_nombre_completo, flags=re.IGNORECASE).strip().rstrip(',; ')
                 else:
-                    _log("Becario validado correctamente en el Excel de la IES.")
-                    
-                cursos_raw = str(mejor_fila[col_cursos]).strip()
-                if cursos_raw:
-                    _log(f"Cursos extraídos sin procesar: {cursos_raw}")
-                    # Separar casos que no tengan saltos de línea evidentes
-                    cursos_raw = re.sub(r'(\w+)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
-                    cursos_raw = re.sub(r'\b(Electivo)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
-                    cursos_raw = re.sub(r'\b(Electivo)\s+(Electivo)\b', r'\1\n\2', cursos_raw, flags=re.IGNORECASE)
-                    cursos_raw = re.sub(r'\b([IVX]+)\s+([A-Z])', r'\1\n\2', cursos_raw)
-                    
-                    # Dividir usando múltiples separadores posibles: salto de línea, coma, guión (con espacios), o punto y coma
-                    separadores = r'\n|;|,(?!\s*\d)|\s+[-–—]\s+'
-                    lista_cursos = [c.strip() for c in re.split(separadores, cursos_raw) if c.strip()]
-                    _log(f"Cursos separados: {lista_cursos}")
-                        
-                    cursos_limpios = []
-                    for c in lista_cursos:
-                        c = re.sub(r"^[\d]+[\.\-\)\s]+\s*", "", c).strip()
-                        c = re.sub(r"^[-•·]\s*", "", c).strip()
-                        if len(c) > 3:
-                            cursos_limpios.append(formatear_curso_oracion(c))
-                            
-                    if cursos_limpios:
-                        resultado["cursos_pendientes"] = cursos_limpios
-                        resultado["cursos_pendientes_texto"] = "\n".join(
-                            f"{i+1}. {c}" for i, c in enumerate(cursos_limpios)
-                        )
-            else:
-                _log("No se encontró el DNI en el Excel de la IES.")
-                raise BecarioNoEncontradoIESException("el becario no se encuentra en el documento de la IES, verificar si cumple el requisito de culminar los cursos en el 2026-II")
-                
-        except BecarioNoEncontradoIESException:
-            raise
+                    m_corto = re.search(r'(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})', linea_clean)
+                    if m_corto:
+                        fecha_encontrada = texto_a_fecha(m_corto.group(0))
+                        if fecha_encontrada:
+                            fecha_texto_encontrada = fecha_a_texto(fecha_encontrada)
+                        doc_nombre_completo = linea_clean[:m_corto.start()].strip()
+                        doc_nombre_completo = re.sub(r'[,;\s]+(?:de\s+|con\s+)?fecha\s*$', '', doc_nombre_completo, flags=re.IGNORECASE).strip().rstrip(',; ')
+                    else:
+                        doc_nombre_completo = linea_clean
+
+                resultado["codigo_doc_ies"] = doc_nombre_completo or "Documento IES"
+                resultado["fecha_doc_ies"] = fecha_encontrada
+                resultado["fecha_doc_ies_texto"] = fecha_texto_encontrada
+
+            if dni_validado or nombres_y_apellidos or expediente or expediente_padron:
+                bloques = cls.extraer_bloques_estudiantes(ruta, log=_log)
+                cursos, cursos_txt = cls.buscar_cursos_estudiante(
+                    bloques,
+                    dni=dni_validado,
+                    nombres=nombres_y_apellidos,
+                    expediente=expediente,
+                    expediente_padron=expediente_padron,
+                    log=_log
+                )
+                resultado["cursos_pendientes"] = cursos
+                resultado["cursos_pendientes_texto"] = cursos_txt
+
         except Exception as e:
             _log(f"Error procesando Excel IES: {e}")
-            
+
         return resultado
 
 
+
 # ============================================================
-# EXTRACTOR DOCUMENTO 4: Documento de la IES
+# FORMATEO DE REFERENCIA DE DOCUMENTOS MÚLTIPLES (NUMERAL 2.6)
+# ============================================================
+def formatear_referencia_documentos_multiples(codigos: list[str]) -> str:
+    """Formatea la lista de documentos de la IES para el numeral 2.6 en informes múltiples.
+    Si todos son del mismo tipo (ej. 'Constancia N° ...'), se unifica como 'Constancias [código 1], [código 2]'.
+    Si son de distintos tipos, se listan separados por coma.
+    La fecha se obvia en documentos múltiples."""
+    codigos_limpios = []
+    for c in codigos:
+        c_str = str(c or "").strip()
+        if c_str and c_str not in codigos_limpios:
+            codigos_limpios.append(c_str)
+
+    if not codigos_limpios:
+        return "Documento IES"
+    if len(codigos_limpios) == 1:
+        return codigos_limpios[0]
+
+    patron_tipo = re.compile(
+        r"^(Constancia|Carta|Oficio|Memorando|Certificado|Nota)\s+(?:N[°ºo\.]*|No\.?|N\.)?\s*(.*)$",
+        re.IGNORECASE
+    )
+
+    matches = [patron_tipo.match(c) for c in codigos_limpios]
+    if all(m is not None for m in matches):
+        tipos = [m.group(1).capitalize() for m in matches]
+        if len(set(tipos)) == 1:
+            tipo = tipos[0]
+            plural = tipo + "s" if not tipo.endswith("s") else tipo
+            resto_codigos = [m.group(2).strip() for m in matches]
+            codigos_fmt = []
+            for r in resto_codigos:
+                if not r.upper().startswith("N°") and not r.upper().startswith("Nº"):
+                    codigos_fmt.append(f"N° {r}")
+                else:
+                    codigos_fmt.append(r)
+            return f"{plural} {', '.join(codigos_fmt)}"
+
+    return ", ".join(codigos_limpios)
+
+
+# ============================================================
+# EXTRACTOR DOCUMENTO 4: Documento de la IES (PDF)
 # ============================================================
 class ExtractorDocumentoIES:
-    """Extrae código, fecha y lista de cursos pendientes del Documento de la IES."""
+    """Extrae código, fecha y lista de cursos pendientes del Documento de la IES en formato PDF.
+    Soporta documentos individuales y múltiples (multi-página o lista de PDFs), identificando
+    becarios por DNI/nombres y detectando si se indica expresamente que no culminará en el 2026-II."""
 
     PATRON_CODIGO = re.compile(
         r"\b([A-Z0-9]{2,}[\.\-][A-Z0-9\.\-]{2,}[\.\-][A-Z0-9\.\-]{2,})\b",
         re.IGNORECASE,
     )
-    # Captura también el TIPO de documento (CARTA, OFICIO, etc.) y el número
+    # Captura también el TIPO de documento (CARTA, OFICIO, CONSTANCIA, etc.) y el número
     PATRON_CODIGO_ALT = re.compile(
-        r"(CARTA|OFICIO|MEMORANDO|CONSTANCIA|NOTA|COMUNICADO)\s+N[°ºo\.]?\s*([\d\w/\.\-]+)",
+        r"(CARTA|OFICIO|MEMORANDO|CONSTANCIA|NOTA|COMUNICADO|CERTIFICADO)\s+(?:N[°ºo\.]*|No\.?|N\.)?\s*([\d\w/\.\-]+)",
         re.IGNORECASE,
     )
     PATRON_FECHA = re.compile(
@@ -1153,6 +1399,122 @@ class ExtractorDocumentoIES:
         re.IGNORECASE,
     )
 
+    PATRON_TABLA_IES = re.compile(
+        r"(?:CLAVE|C[ÓO]DIGO|N[°ºo]?)\s+(?:CURSO|ASIGNATURA|MATERIA)\s+CR[ÉE]DITOS?"
+        r"|CURSO\s+CR[ÉE]DITOS?|ASIGNATURA\s+CR[ÉE]DITOS?"
+        r"|CLAVE\s+CURSO|C[ÓO]DIGO\s+CURSO",
+        re.IGNORECASE,
+    )
+    PATRON_FILA_TABLA = re.compile(
+        r"^\s*([A-Z0-9]{2,12}|\d{1,3}[\.\)]?)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ\s\(\)\/\-]{3,80}?)(?:\s+(\d{1,2}(?:[\.,]\d{1,2})?))?\s*$",
+        re.MULTILINE,
+    )
+    PATRON_STOP_TABLA = re.compile(
+        r"cursos?\s+que\s+le\s+resta|el\s+proceso\s+de\s+evaluaci[oó]n|se\s+expide|total|cr[eé]ditos?\s+aprobados?|lima,|atentamente",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def detectar_no_culminacion(cls, texto: str) -> tuple[bool, str]:
+        """Detecta si el documento de la IES indica expresamente que el becario
+        NO culminará estudios en el semestre solicitado (2026-II/2026-2) o que
+        requerirá semestres posteriores además del presente.
+        
+        NO alerta si únicamente menciona que tiene cursos que le resta aprobar,
+        que el proceso de evaluación aún no ha concluido o que depende de su aprobación."""
+        patrones_alerta = [
+            r"no\s+(?:va\s+a\s+)?(?:acabar|culminar|concluir|terminar|egresar)\s+estudios\s+en\s+(?:el\s+)?(?:semestre|periodo|ciclo|202\d)",
+            r"no\s+(?:va\s+a\s+)?(?:acabar|culminar|concluir|terminar|egresar)\s+en\s+(?:el\s+)?(?:202\d|semestre|periodo)",
+            r"(?:faltar[aá]n?|le\s+restan?|quedan?)\s+(?:m[aá]s\s+)?cursos?\s+para\s+(?:un\s+)?semestre\s+posterior",
+            r"(?:semestre|semestres|periodo|ciclo)\s+posteriores?\s+adem[aá]s\s+del\s+presente",
+            r"requerir[aá]\s+(?:de\s+)?(?:un\s+)?semestre\s+(?:adicional|posterior)",
+            r"requiere\s+(?:un\s+)?semestre\s+(?:adicional|posterior)",
+            r"no\s+culminar[aá]\s+estudios\s+con\s+la\s+ampliaci[oó]n",
+            r"no\s+egresar[aá]\s+al\s+t[eé]rmino\s+del\s+(?:presente\s+)?semestre",
+            r"pendiente[s]?\s+para\s+el\s+semestre\s+posterior",
+            r"cursos?\s+pendientes?\s+en\s+el\s+2027",
+        ]
+        texto_lower = texto.lower()
+        for p in patrones_alerta:
+            m = re.search(p, texto_lower)
+            if m:
+                return True, m.group(0)
+        return False, ""
+
+    @classmethod
+    def _extraer_cursos_texto_o_tablas(cls, texto: str, tablas: list = None) -> list[str]:
+        """Extrae la lista limpia de nombres de cursos desde texto o tablas de pdfplumber."""
+        cursos = []
+        
+        # 1. Intentar desde tablas estructuradas
+        if tablas:
+            for t in tablas:
+                if not t or len(t) < 2:
+                    continue
+                header = [str(c or "").lower().strip() for c in t[0]]
+                col_c = -1
+                for j, h in enumerate(header):
+                    if any(w in h for w in ["curso", "asignatura", "materia"]):
+                        col_c = j
+                        break
+                if col_c != -1:
+                    for row in t[1:]:
+                        if not row or len(row) <= col_c:
+                            continue
+                        val = str(row[col_c] or "").strip()
+                        if val and len(val) > 3 and not re.search(r"total|cr[eé]dito|subtotal", val, re.IGNORECASE):
+                            val_fmt = formatear_curso_oracion(val)
+                            if val_fmt not in cursos:
+                                cursos.append(val_fmt)
+                    if cursos:
+                        return cursos
+
+        # 2. RUTA TABLA EN TEXTO (CLAVE/CÓDIGO/N° CURSO CRÉDITOS)
+        m_tabla = cls.PATRON_TABLA_IES.search(texto)
+        if m_tabla:
+            zona_tabla = texto[m_tabla.end(): m_tabla.end() + 1000]
+            lineas = zona_tabla.splitlines()
+            for linea in lineas:
+                linea_str = linea.strip()
+                if not linea_str:
+                    continue
+                if cls.PATRON_STOP_TABLA.search(linea_str):
+                    break
+                m_f = cls.PATRON_FILA_TABLA.match(linea_str)
+                if m_f:
+                    nombre = m_f.group(2).strip()
+                    if nombre and len(nombre) > 3 and not re.search(r"cr[eé]dito|total|subtotal", nombre, re.IGNORECASE):
+                        nombre_fmt = formatear_curso_oracion(nombre)
+                        if nombre_fmt not in cursos:
+                            cursos.append(nombre_fmt)
+            if cursos:
+                return cursos
+
+        # 3. RUTA LISTA CLÁSICA (Cursos pendientes ... 1. Curso / • Curso)
+        m_seccion = cls.PATRON_SECCION_CURSOS.search(texto)
+        if m_seccion:
+            seccion = texto[m_seccion.start():]
+            m_nombre_cursos = cls.PATRON_SECCION_NOMBRE_CURSOS.search(seccion)
+            if m_nombre_cursos:
+                seccion = seccion[m_nombre_cursos.start():]
+            bloques = re.split(r"\n\s*\n", seccion)
+            bloque_cursos = bloques[0] + ("\n" + bloques[1] if len(bloques) > 1 else "")
+            patron_item_ext = re.compile(
+                r"^[\s]*(?:\d+[\.\)\s]\s*|[-•·]\s*)([A-ZÁÉÍÓÚÑA-Za-záéíóúñ].+)$",
+                re.MULTILINE,
+            )
+            for m_item in patron_item_ext.finditer(bloque_cursos):
+                curso = m_item.group(1).strip()
+                curso = re.sub(r"\s+\d{1,3}(?:\.\d{1,2})?\s*$", "", curso).strip()
+                if cls.PATRON_CREDITO.search(curso):
+                    continue
+                if len(curso) > 3:
+                    curso_fmt = formatear_curso_oracion(curso)
+                    if curso_fmt not in cursos:
+                        cursos.append(curso_fmt)
+
+        return cursos
+
     @classmethod
     def extraer(cls, ruta_pdf: str | Path, ies_esperada: str = "") -> dict:
         ruta = Path(ruta_pdf)
@@ -1163,21 +1525,30 @@ class ExtractorDocumentoIES:
             "cursos_pendientes": [],
             "cursos_pendientes_texto": "",
             "ies_validada": False,
+            "alerta_no_culminacion": False,
+            "motivo_no_culminacion": "",
         }
 
         with pdfplumber.open(ruta) as pdf:
             textos = []
+            tablas = []
             for p in pdf.pages:
                 try:
                     textos.append(p.extract_text() or "")
                 except Exception:
                     pass
+                try:
+                    t_list = p.extract_tables()
+                    if t_list:
+                        tablas.extend(t_list)
+                except Exception:
+                    pass
             texto_completo = "\n".join(textos)
 
-        # Código del documento — captura tipo (Carta/Oficio) + código
+        # Código del documento — captura tipo (Carta/Oficio/Constancia) + código
         m_alt = cls.PATRON_CODIGO_ALT.search(texto_completo)
         if m_alt:
-            tipo_doc = m_alt.group(1).strip().capitalize()   # 'Carta', 'Oficio', etc.
+            tipo_doc = m_alt.group(1).strip().capitalize()
             codigo = m_alt.group(2).strip()
             resultado["codigo_doc_ies"] = f"{tipo_doc} N\u00b0 {codigo}"
         else:
@@ -1211,69 +1582,158 @@ class ExtractorDocumentoIES:
         else:
             resultado["ies_validada"] = True
 
-        # RUTA 1: Formato tabla "Nº CURSO CRÉDITO" (ej: "1 TEORÍA DE LAS RELACIONES 4")
-        patron_tabla_ies = re.compile(
-            r"N[°ºo]?\s*CURSO\s+CR[ÉE]DITO|CURSO\s+CR[ÉE]DITO|ASIGNATURA\s+CR[ÉE]DITO",
-            re.IGNORECASE,
-        )
-        m_tabla = patron_tabla_ies.search(texto_completo)
-        if m_tabla:
-            zona_tabla = texto_completo[m_tabla.end(): m_tabla.end() + 800]
-            # Filas: "1 NOMBRE DEL CURSO 4" o "1. NOMBRE DEL CURSO 4"
-            pat_fila_tabla = re.compile(
-                r"^(\d+)[\.\s]\s*([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑA-Za-záéíóúñ\s\(\)\/\-]{4,80?}?)\s+\d{1,3}\s*$",
-                re.MULTILINE,
-            )
-            cursos_tabla = []
-            for m_f in pat_fila_tabla.finditer(zona_tabla):
-                nombre = m_f.group(2).strip()
-                # Filtrar líneas de créditos o encabezados
-                if nombre and len(nombre) > 3 and not re.search(r"cr[eé]dito|total|subtotal", nombre, re.IGNORECASE):
-                    nombre_fmt = formatear_curso_oracion(nombre)
-                    if nombre_fmt not in cursos_tabla:
-                        cursos_tabla.append(nombre_fmt)
-            if cursos_tabla:
-                resultado["cursos_pendientes"] = cursos_tabla
-                resultado["cursos_pendientes_texto"] = "\n".join(
-                    f"{i+1}. {c}" for i, c in enumerate(cursos_tabla)
-                )
-                resultado["raw_text"] = texto_completo
-                return resultado
-
-        # RUTA 2: Formato lista clásica con viñeta/numeración "1. Curso" o "• Curso"
-        m_seccion = cls.PATRON_SECCION_CURSOS.search(texto_completo)
-        if m_seccion:
-            seccion = texto_completo[m_seccion.start():]
-            # Buscar subsección titulada "Cursos" con los nombres reales
-            m_nombre_cursos = cls.PATRON_SECCION_NOMBRE_CURSOS.search(seccion)
-            if m_nombre_cursos:
-                seccion = seccion[m_nombre_cursos.start():]
-            bloques = re.split(r"\n\s*\n", seccion)
-            bloque_cursos = bloques[0] + ("\n" + bloques[1] if len(bloques) > 1 else "")
-            # Patron extendido: acepta "1. Curso", "1) Curso" Y también "1 Curso" (sin punto)
-            patron_item_ext = re.compile(
-                r"^[\s]*(?:\d+[\.\)\s]\s*|[-•·]\s*)([A-ZÁÉÍÓÚÑA-Za-záéíóúñ].+)$",
-                re.MULTILINE,
-            )
-            cursos = []
-            for m_item in patron_item_ext.finditer(bloque_cursos):
-                curso = m_item.group(1).strip()
-                # Quitar crédito al final (número suelto al final de la línea)
-                curso = re.sub(r"\s+\d{1,3}\s*$", "", curso).strip()
-                # Filtrar líneas que describen créditos (no son nombres de cursos)
-                if cls.PATRON_CREDITO.search(curso):
-                    continue
-                if len(curso) > 3:
-                    curso_fmt = formatear_curso_oracion(curso)
-                    if curso_fmt not in cursos:
-                        cursos.append(curso_fmt)
-            resultado["cursos_pendientes"] = cursos
+        # Cursos pendientes
+        cursos = cls._extraer_cursos_texto_o_tablas(texto_completo, tablas)
+        resultado["cursos_pendientes"] = cursos
+        if cursos:
             resultado["cursos_pendientes_texto"] = "\n".join(
                 f"{i+1}. {c}" for i, c in enumerate(cursos)
             )
 
+        # Alerta de no culminación
+        alerta, motivo = cls.detectar_no_culminacion(texto_completo)
+        resultado["alerta_no_culminacion"] = alerta
+        resultado["motivo_no_culminacion"] = motivo
+
         resultado["raw_text"] = texto_completo
         return resultado
+
+    @classmethod
+    def extraer_bloques_estudiantes(cls, ruta_pdf_o_rutas: str | Path, log=None) -> list[dict]:
+        """Extrae los bloques de estudiantes y sus constancias/cursos desde uno o varios PDFs.
+        Soporta multi-páginas y múltiples archivos separados por punto y coma."""
+        _log = log or (lambda msg: None)
+        rutas_str = str(ruta_pdf_o_rutas or "")
+        rutas_raw = [r.strip() for r in rutas_str.split(";") if r.strip()]
+        
+        bloques = []
+        for r_path in rutas_raw:
+            p_obj = Path(r_path)
+            if not p_obj.exists() or not p_obj.is_file():
+                continue
+            try:
+                with pdfplumber.open(p_obj) as pdf:
+                    for num_pag, p in enumerate(pdf.pages, start=1):
+                        txt = p.extract_text() or ""
+                        if not txt.strip():
+                            continue
+                        tbls = []
+                        try:
+                            tbls = p.extract_tables() or []
+                        except Exception:
+                            pass
+                            
+                        # Extraer código y fecha de este bloque/página
+                        cod_doc = ""
+                        m_alt = cls.PATRON_CODIGO_ALT.search(txt)
+                        if m_alt:
+                            t_doc = m_alt.group(1).strip().capitalize()
+                            c_doc = m_alt.group(2).strip()
+                            cod_doc = f"{t_doc} N\u00b0 {c_doc}"
+                        else:
+                            m_c = cls.PATRON_CODIGO.search(txt)
+                            if m_c:
+                                cod_doc = m_c.group(1)
+                                
+                        f_doc = None
+                        f_doc_txt = ""
+                        m_f = cls.PATRON_FECHA.search(txt)
+                        if m_f:
+                            f_doc = texto_a_fecha(m_f.group(0))
+                            if f_doc:
+                                f_doc_txt = fecha_a_texto(f_doc)
+                        if not f_doc:
+                            m_f2 = re.search(r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", txt)
+                            if m_f2:
+                                f_doc = texto_a_fecha(m_f2.group(0))
+                                if f_doc:
+                                    f_doc_txt = fecha_a_texto(f_doc)
+                                    
+                        cursos = cls._extraer_cursos_texto_o_tablas(txt, tbls)
+                        cursos_txt = "\n".join(f"{idx+1}. {c}" for idx, c in enumerate(cursos)) if cursos else ""
+                        
+                        alerta, motivo = cls.detectar_no_culminacion(txt)
+                        
+                        bloques.append({
+                            "archivo": p_obj.name,
+                            "pagina": num_pag,
+                            "texto": txt,
+                            "tablas": tbls,
+                            "codigo_doc": cod_doc,
+                            "fecha_doc": f_doc,
+                            "fecha_doc_texto": f_doc_txt,
+                            "cursos": cursos,
+                            "cursos_texto": cursos_txt,
+                            "alerta_no_culminacion": alerta,
+                            "motivo_no_culminacion": motivo,
+                        })
+            except Exception as e:
+                _log(f"Error leyendo PDF IES '{p_obj.name}': {e}")
+                
+        return bloques
+
+    @classmethod
+    def buscar_cursos_estudiante(
+        cls,
+        bloques: list[dict],
+        dni: str = "",
+        nombres: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
+        log=None
+    ) -> tuple[list[str], str, str, str, bool, str]:
+        """Busca y extrae los cursos y datos de la constancia del estudiante cruzando DNI, nombres y expediente.
+        Retorna: (cursos_list, cursos_texto, codigo_doc_ies, fecha_doc_ies_texto, alerta_no_culminacion, motivo)"""
+        _log = log or (lambda msg: None)
+        dni_clean = re.sub(r"\D", "", str(dni or "")).strip()
+        exp_clean = re.sub(r"\D", "", str(expediente or "")).strip()
+        exp_pad_clean = re.sub(r"\D", "", str(expediente_padron or "")).strip()
+        
+        # 1. Prioridad: Coincidencia por DNI
+        if dni_clean and len(dni_clean) in (7, 8):
+            for b in bloques:
+                if re.search(r'\b' + re.escape(dni_clean) + r'\b', b["texto"]):
+                    _log(f"  [IES PDF] Becario hallado por DNI ({dni_clean}) en {b['archivo']} pág. {b['pagina']}")
+                    return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
+
+        # 2. Coincidencia por Nombres y Apellidos
+        nombres_str = str(nombres or "").strip().upper()
+        if nombres_str:
+            repls = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N"}
+            for k, v in repls.items():
+                nombres_str = nombres_str.replace(k, v)
+            tokens = [t for t in re.sub(r"[^A-Z0-9]+", " ", nombres_str).split() if len(t) >= 3 and t not in ("DEL", "LOS", "LAS", "SAN")]
+            
+            mejor_bloque = None
+            mejor_matches = 0
+            for b in bloques:
+                txt_norm = b["texto"].upper()
+                for k, v in repls.items():
+                    txt_norm = txt_norm.replace(k, v)
+                coincidencias = sum(1 for tok in tokens if tok in txt_norm)
+                if coincidencias > mejor_matches and coincidencias >= min(2, len(tokens)):
+                    mejor_matches = coincidencias
+                    mejor_bloque = b
+                    
+            if mejor_bloque:
+                _log(f"  [IES PDF] Becario hallado por Nombres ({mejor_matches}/{len(tokens)} tokens) en {mejor_bloque['archivo']} pág. {mejor_bloque['pagina']}")
+                return mejor_bloque["cursos"], mejor_bloque["cursos_texto"], mejor_bloque["codigo_doc"], mejor_bloque["fecha_doc_texto"], mejor_bloque["alerta_no_culminacion"], mejor_bloque["motivo_no_culminacion"]
+
+        # 3. Coincidencia por Expediente
+        for exp_val in (exp_clean, exp_pad_clean):
+            if exp_val and len(exp_val) >= 4:
+                for b in bloques:
+                    if exp_val in b["texto"]:
+                        _log(f"  [IES PDF] Becario hallado por Expediente ({exp_val}) en {b['archivo']} pág. {b['pagina']}")
+                        return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
+
+        # 4. Fallback si hay un solo bloque disponible
+        if len(bloques) == 1:
+            b = bloques[0]
+            _log(f"  [IES PDF] Usando único bloque disponible en {b['archivo']}")
+            return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
+
+        return [], "", "", "", False, ""
 
 
 # ============================================================
@@ -1555,64 +2015,87 @@ class ExtractorPadron:
         if not apellidos_partes and apellidos_gen:
             apellidos_partes.append(apellidos_gen)
 
-        apellidos_str = " ".join(apellidos_partes).strip()
-        nombres_str = nombres_gen.strip() if nombres_gen else ""
+        apellidos = " ".join(apellidos_partes).strip()
+        nombres = nombres_gen.strip()
 
-        partes_nombre = []
-        if apellidos_partes:
-            partes_nombre.extend(apellidos_partes)
+        # Si aún falta alguno, intentar extraer de becario_gen
+        if not apellidos or not nombres:
+            if becario_gen:
+                partes = becario_gen.split()
+                if len(partes) >= 2 and not apellidos:
+                    apellidos = " ".join(partes[:2])
+                if len(partes) >= 3 and not nombres:
+                    nombres = " ".join(partes[2:])
+                elif len(partes) == 2 and not nombres:
+                    nombres = partes[1]
 
-        if nombres_str and nombres_str not in partes_nombre:
-            partes_nombre.append(nombres_str)
-
-        if partes_nombre:
-            nombre_completo = " ".join(partes_nombre).strip()
-        elif becario_gen:
-            nombre_completo = becario_gen
-            # Intentar separar apellidos/nombres del campo combinado:
-            # se asume que las últimas 2 palabras son el nombre propio
-            tokens_comb = becario_gen.split()
-            if len(tokens_comb) >= 4:
-                apellidos_str = " ".join(tokens_comb[:2])
-                nombres_str = " ".join(tokens_comb[2:])
-            else:
-                apellidos_str = becario_gen
-                nombres_str = ""
+        # Nombre completo consolidado: APELLIDOS + NOMBRES
+        if apellidos and nombres:
+            nombre_completo = f"{apellidos} {nombres}".strip().upper()
         else:
-            # Extraer cadenas de texto legibles de la fila
-            tokens_vali = [
-                str(v).strip() for k, v in fila.items()
-                if str(v).strip() and len(str(v).strip()) > 3 and self._norm(str(v)) not in self.STOP_WORDS
-            ]
-            nombre_completo = " ".join(tokens_vali[:4]) if tokens_vali else "(becario detectado)"
-            apellidos_str = nombre_completo
-            nombres_str = ""
+            nombre_completo = (becario_gen or apellidos or nombres).strip().upper()
 
-        programa = _get_val("PROGRAMA", "BECA", "MODALIDAD")
-        convocatoria = _get_val("CONVOCATORIA", "ANIO", "AÑO", "PERIODO")
+        # Normalizar espacios
+        nombre_completo = re.sub(r"\s+", " ", nombre_completo)
+        apellidos = re.sub(r"\s+", " ", apellidos)
+        nombres = re.sub(r"\s+", " ", nombres)
 
-        sexo_raw = _get_val("SEXO", "GENERO").upper()
-        sexo = "F" if sexo_raw.startswith("F") else "M"
+        # Programa Beca
+        prog_beca = _get_val("PROGRAMA", "BECA", "MODALIDAD")
+        convocatoria = _get_val("CONVOCATORIA", "ANIO", "AÑO", "VERSION")
 
-        fecha_ini = _get_val("INICIO", "FINICIO")
-        fecha_fin = _get_val("FIN", "FFIN", "TERMINO")
+        # Fechas de inicio y fin de beca (SIBEC)
+        fecha_ini = _get_val("INICIO", "FECHA INICIO", "FEC_INI", "INICIO SIBEC", "FECHA_INICIO")
+        fecha_fin = _get_val("FIN", "FECHA FIN", "FEC_FIN", "FIN SIBEC", "FECHA_FIN", "CULMINACION")
+
+        # Sexo / Género
+        sexo_raw = _get_val("SEXO", "GENERO")
+        sexo = "M"
+        if sexo_raw:
+            s = sexo_raw.upper().strip()
+            if s.startswith("F") or "FEM" in s or "MUJER" in s:
+                sexo = "F"
+
+        # RJ_ADJUDICACION
+        rj_adjudicacion = _get_val("RJ ADJUDICACION", "RJ_ADJUDICACION", "RJD ADJUDICACION", "RJD_ADJUDICACION", "RESOLUCION ADJUDICACION", "RESOLUCION_ADJUDICACION", "RESOLUCION", "RJ", "RJD")
+
+        # INSTITUCION (discriminando TIPO_INSTITUCION)
+        institucion = ""
+        for orig, norm_col in cols_norm.items():
+            if "TIPO" in orig:
+                continue
+            if any(w in orig for w in ["NOMBRE INSTITUCION", "INSTITUCION EDUCATIVA", "UNIVERSIDAD", "IES", "INSTITUCION"]):
+                val = str(fila[norm_col]).strip()
+                if val and val.lower() != "nan":
+                    institucion = val
+                    break
+
+        # CARRERA
+        carrera = _get_val("CARRERA", "PROGRAMA ESTUDIOS", "PROGRAMA_ESTUDIOS", "ESPECIALIDAD")
 
         return {
             "dni_validado": dni,
+            "apellidos_becario": apellidos,
+            "nombres_becario": nombres,
             "nombres_y_apellidos_validados": nombre_completo,
-            "apellidos_becario": apellidos_str,
-            "nombres_becario": nombres_str,
-            "programa_beca": programa,
+            "programa_beca": prog_beca,
             "convocatoria": convocatoria,
-            "sexo": sexo,
             "fecha_inicio_sibec_raw": fecha_ini,
             "fecha_fin_sibec_raw": fecha_fin,
+            "sexo": sexo,
+            "rj_adjudicacion": rj_adjudicacion,
+            "institucion": institucion,
+            "carrera": carrera,
         }
 
 
 # ============================================================
-# GENERADOR DE CONCORDANCIAS DE GÉNERO
+
+
 # ============================================================
+# FUNCIONES DE CONCORDANCIA Y UTILIDADES
+# ============================================================
+
 def generar_concordancias_genero(sexo: str) -> dict:
     """Genera variables de concordancia gramatical según el género."""
     es_femenino = str(sexo).strip().upper().startswith("F")
@@ -1642,46 +2125,108 @@ def generar_concordancias_genero(sexo: str) -> dict:
         }
 
 
+def formatear_nombre_ies(nombre: str) -> str:
+    """Formatea el nombre de la IES a tipo título respetando conectores en minúsculas.
+    Convierte conectores como 'de', 'del', 'y', 'e', 'la', 'las', 'el', 'los', 'en', 'para', 'por', 'con', 'a' a minúsculas.
+    Ej: 'UNIVERSIDAD PERUANA DE CIENCIAS APLICADAS' -> 'Universidad Peruana de Ciencias Aplicadas'
+    Ej: 'PONTIFICIA UNIVERSIDAD CATÓLICA DEL PERÚ' -> 'Pontificia Universidad Católica del Perú'"""
+    if not nombre:
+        return ""
+    palabras = str(nombre).strip().split()
+    if not palabras:
+        return ""
 
-# ============================================================
-# FUNCIONES UTILITARIAS DE LIMPIEZA DE DATOS
-# ============================================================
+    conectores = {"de", "del", "y", "e", "la", "las", "el", "los", "en", "para", "por", "con", "a"}
+    palabras_fmt = []
+    for i, p in enumerate(palabras):
+        p_low = p.lower()
+        if i == 0:
+            palabras_fmt.append(p_low.capitalize())
+        elif p_low in conectores:
+            palabras_fmt.append(p_low)
+        else:
+            palabras_fmt.append(p_low.capitalize())
+
+    return " ".join(palabras_fmt)
+
 
 def limpiar_nombre_ies(nombre: str) -> str:
     """Elimina sufijos de sede de la institución. Ej: 'Univ. X / Sede Lima' -> 'Univ. X'."""
     if not nombre:
         return nombre
-    # Remover ' / Sede ...', '. / Sede ...', ' - Sede ...', '- Sede ...' y variantes
     nombre = re.sub(r"[\s\.]*[/\-]\s*Sede\s+.+", "", nombre, flags=re.IGNORECASE)
-    # Remover ' Sede ...' sin separador
     nombre = re.sub(r"\s+Sede\s+.+", "", nombre, flags=re.IGNORECASE)
     return nombre.strip().strip(".")
 
 
 def limpiar_nombre_informe(nombre: str) -> str:
-    """Trunca el nombre del informe en 'LIMA' y capitaliza 'Informe'. 
-    Ej: 'INFORME N° 4291-2026-MINEDU/VMGI-PRONABEC-DICONCI-SUCCOR-LIMA A' 
-        -> 'Informe N° 4291-2026-MINEDU/VMGI-PRONABEC-DICONCI-SUCCOR-LIMA'"""
+    """Trunca el nombre del informe en 'LIMA' y capitaliza 'Informe'."""
     if not nombre:
         return nombre
-    # Truncar en "-LIMA" incluyendo la palabra LIMA pero excluyendo lo que sigue
     m = re.search(r"(-LIMA)\b", nombre, re.IGNORECASE)
     if m:
         nombre = nombre[:m.end()]
-    # Capitalizar solo la primera letra: INFORME -> Informe
     nombre = nombre.strip()
     if nombre.upper().startswith("INFORME"):
         nombre = "Informe" + nombre[7:]
     return nombre
 
 
+
+def normalizar_sigedo_con_anio(sigedo: str, anio: int | str = 2026) -> str:
+    """Asegura que el número de SIGEDO o expediente tenga el año '-2026'."""
+    s = str(sigedo or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s*-\s*", "-", s)
+    if re.match(r"^\d{4,8}$", s):
+        s = f"{s}-{anio}"
+    return s
+
+
+def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: dict | None = None) -> str:
+    """Calcula el texto unificado de Beca y Convocatoria para el Asunto y Numeral 2.1."""
+    becas_conv = []
+    for b in becarios:
+        b_c = b.get("BECA_Y_CONVOCATORIA_VALIDADA", "").strip()
+        if not b_c:
+            prog = b.get("PROGRAMA_BECA", "")
+            conv = b.get("CONVOCATORIA", "")
+            b_c = limpiar_beca_convocatoria(prog, conv)
+        if b_c and b_c not in becas_conv:
+            becas_conv.append(b_c)
+    
+    if not becas_conv and datos_succor:
+        succor_txt = datos_succor.get("raw_text", "")
+        m_bc = re.search(r"\b(Beca\s+[A-Za-z0-9]+(?:\s*-\s*Modalidad\s+[A-Za-z0-9]+)?)[,\s]+(?:convocatoria\s+)?(20\d{2})\b", succor_txt, re.IGNORECASE)
+        if m_bc:
+            becas_conv.append(f"{m_bc.group(1).title()} - Convocatoria {m_bc.group(2)}")
+            
+    if not becas_conv:
+        return "Beca 18 - Convocatoria 2023"
+        
+    formateadas = []
+    for bc in becas_conv:
+        m = re.match(r"(.*?)\s*-\s*(\d{4})", bc)
+        if m:
+            nom_b = m.group(1).title()
+            anio = m.group(2)
+            formateadas.append(f"{nom_b} - Convocatoria {anio}")
+        else:
+            formateadas.append(bc.title())
+            
+    if len(formateadas) == 1:
+        return formateadas[0]
+    elif len(formateadas) == 2:
+        return f"{formateadas[0]} y {formateadas[1]}"
+    else:
+        return ", ".join(formateadas[:-1]) + f" y {formateadas[-1]}"
+
 def limpiar_beca_convocatoria(programa: str, convocatoria: str) -> str:
     """Genera texto limpio de beca y año. Ej: 'BECA 18 BECA REPARED', '2021' -> 'BECA 18 - 2021'."""
     if not programa:
         return f"{convocatoria}".strip() if convocatoria else ""
     prog = programa.strip()
-    # Mantener solo el inicio tipo 'BECA 18', 'BECA BICENTENARIO', etc.
-    # Eliminar sub-modalidades redundantes (BECA REPARED, BECA PREPAGO, BECA INTEGRA, etc.)
     m = re.match(r"(BECA\s+\w+)", prog, re.IGNORECASE)
     nombre_beca = m.group(1).strip() if m else prog
     anio = re.search(r"\b(20\d{2})\b", convocatoria or "") or re.search(r"\b(20\d{2})\b", programa or "")
@@ -1729,6 +2274,8 @@ class ProcesadorInformes:
         self._log = log or (lambda msg: None)
         self._progreso = progreso or (lambda pct, msg: None)
         self.nro_informe = nro_informe
+        self.rutas_formatos = [Path(r) for r in rutas_formatos] if rutas_formatos else []
+        self.advertencias = []
 
     def ejecutar(self) -> Path:
         self._validar_entradas()
@@ -1929,6 +2476,15 @@ class ProcesadorInformes:
             self._log(f"  Fecha doc. IES: {ctx['FECHA_DOC_IES_TEXTO']}")
             self._log(f"  IES validada en doc.: {'SÍ' if ies_val else 'NO'}")
 
+        if datos_ies.get("alerta_no_culminacion"):
+            nom_b = ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "(becario)")
+            msg_adv = f"ATENCIÓN: El documento de la IES indica que el becario {nom_b} no culminará estudios en el semestre 2026-II (requiere cursos en semestres posteriores además del presente)."
+            if not hasattr(self, "advertencias"):
+                self.advertencias = []
+            if msg_adv not in self.advertencias:
+                self.advertencias.append(msg_adv)
+            self._log(f"  [ALERTA] {msg_adv}")
+
         # Cursos pendientes:
         # El documento de la IES es SIEMPRE la fuente definitiva (define cantidad y nombres).
         # El Informe SUCCOR solo se usa como respaldo si el doc. IES no entregó ningún curso.
@@ -2016,9 +2572,10 @@ class ProcesadorInformes:
 
     def ejecutar_multiple(self) -> list[Path]:
         from datetime import date
-        from .generador_word import GeneradorWord
-        from .generador_excel import GeneradorExcel
-        from .procesador import (
+        from generador_word import GeneradorWord
+        from generador_excel import GeneradorExcel
+        from generador_oficio import GeneradorOficio
+        from procesador import (
             ExtractorInformeSuccor, ExtractorCalendarioAcademico, ExtractorDocumentoIES, 
             ExtractorFormatoAutogenerado, ExtractorPadron, nombre_en_orden_nombres_apellidos, 
             limpiar_beca_convocatoria, texto_a_fecha, fecha_a_corto, construir_tabla_ciclos, 
@@ -2035,10 +2592,13 @@ class ProcesadorInformes:
         self._log("Doc.2: Extrayendo Documento IES...")
         is_excel = str(self.ruta_documento_ies).lower().endswith((".xlsx", ".xls"))
         datos_ies = {}
+        bloques_ies = []
         if is_excel:
             datos_ies = ExtractorDocumentoIESExcel.extraer(self.ruta_documento_ies, log=self._log)
+            bloques_ies = ExtractorDocumentoIESExcel.extraer_bloques_estudiantes(self.ruta_documento_ies, log=self._log)
         else:
             datos_ies = ExtractorDocumentoIES.extraer(self.ruta_documento_ies)
+            bloques_ies = ExtractorDocumentoIES.extraer_bloques_estudiantes(self.ruta_documento_ies, log=self._log)
             
         # 3. Informe SUCCOR (Compartido)
         self._log("Doc.3: Extrayendo Informe SUCCOR Múltiple...")
@@ -2048,15 +2608,30 @@ class ProcesadorInformes:
         padron = ExtractorPadron(self.ruta_excel)
         padron.cargar()
         
+        # Referencia IES limpia
+        ref_doc_ies = datos_ies.get('codigo_doc_ies', '')
+        fecha_ies_txt = datos_ies.get('fecha_doc_ies_texto', '')
+        if ref_doc_ies and fecha_ies_txt:
+            referencia_doc_ies_str = f"{ref_doc_ies}, de fecha {fecha_ies_txt}"
+        elif ref_doc_ies:
+            referencia_doc_ies_str = ref_doc_ies
+        else:
+            referencia_doc_ies_str = "Documento IES"
+
+        nombre_inf_succor = ExtractorInformeSuccor.limpiar_nombre_succor(datos_succor.get("nombre_informe_succor", ""))
+        num_sigedo_succor = normalizar_sigedo_con_anio(datos_succor.get("numero_sigedo", ""))
         super_contexto = {
             "CANTIDAD_BECARIOS": len(self.rutas_formatos),
-            "FECHA_ACTUAL_TEXTO": date.today().strftime("%d de %m del %Y").replace(" 0", " ").replace("de 01", "de enero").replace("de 02", "de febrero").replace("de 03", "de marzo").replace("de 04", "de abril").replace("de 05", "de mayo").replace("de 06", "de junio").replace("de 07", "de julio").replace("de 08", "de agosto").replace("de 09", "de septiembre").replace("de 10", "de octubre").replace("de 11", "de noviembre").replace("de 12", "de diciembre"),
-            "NUMERO_SIGEDO_GLOBAL": datos_succor.get("numero_sigedo", ""),
+            "FECHA_ACTUAL_TEXTO": fecha_a_texto(date.today()),
+            "NUMERO_SIGEDO_GLOBAL": num_sigedo_succor,
             "BECA_TITULO_GLOBAL": "",
             "INSTITUCION_GLOBAL": datos_succor.get("institucion", ""),
             "SEMESTRE_SOLICITADO_GLOBAL": datos_succor.get("semestre_solicitado", ""),
-            "REFERENCIA_SUCCOR": datos_succor.get("nombre_informe_succor", ""),
-            "REFERENCIA_DOC_IES": f"Oficio IES {datos_ies.get('codigo_doc_ies', '')} de fecha {datos_ies.get('fecha_doc_ies_texto', '')}",
+            "NOMBRE_INFORME_SUCCOR": nombre_inf_succor,
+            "REFERENCIA_SUCCOR": nombre_inf_succor,
+            "CODIGO_DOC_IES": ref_doc_ies,
+            "FECHA_DOC_IES_TEXTO": fecha_ies_txt,
+            "REFERENCIA_DOC_IES": referencia_doc_ies_str,
             "REFERENCIAS": [],
             "becarios": [],
             "NUMERO_INFORME_GENERAR": self.nro_informe
@@ -2065,25 +2640,47 @@ class ProcesadorInformes:
         rutas_salida = []
         gen_word = GeneradorWord()
         gen_excel = GeneradorExcel()
+        gen_oficio = GeneradorOficio()
         
         # Iterar por cada formato autogenerado cargado
+        fechas_solicitud_todas = []
         for idx, ruta_fmt in enumerate(self.rutas_formatos):
             self._log(f"--- Procesando Becario {idx+1} ---")
             datos_fmt = ExtractorFormatoAutogenerado.extraer(ruta_fmt)
             expediente = datos_fmt.get("numero_expediente", "")
+            f_sol_obj = datos_fmt.get("fecha_solicitud")
+            if f_sol_obj:
+                fechas_solicitud_todas.append(f_sol_obj)
             
+            dni_fmt = datos_fmt.get("dni", "")
+            nombre_fmt = datos_fmt.get("nombres", "")
+
             # Buscar en SUCCOR
             bec_succor = None
             for b in datos_succor.get("becarios", []):
-                if expediente and expediente == b.get("expediente"):
+                # 1. Prioridad: Coincidencia por DNI
+                if dni_fmt and str(b.get("dni", "")).strip() == str(dni_fmt).strip():
+                    bec_succor = b
+                    break
+                # 2. Coincidencia por expediente
+                if expediente and str(b.get("expediente", "")).strip() == str(expediente).strip():
                     bec_succor = b
                     break
             
+            # 3. Coincidencia por nombre si no hubo DNI/expediente
+            if not bec_succor and nombre_fmt:
+                for b in datos_succor.get("becarios", []):
+                    b_nom = str(b.get("nombre", "")).strip()
+                    if b_nom and (b_nom.lower() in nombre_fmt.lower() or nombre_fmt.lower() in b_nom.lower()):
+                        bec_succor = b
+                        break
+
+            # 4. Fallback por índice solo si no se pudo correlacionar por datos
             if not bec_succor and len(datos_succor.get("becarios", [])) > idx:
                 bec_succor = datos_succor["becarios"][idx]
                 
-            dni_buscar = bec_succor.get("dni") if bec_succor else ""
-            nombre_buscar = bec_succor.get("nombre") if bec_succor else ""
+            dni_buscar = dni_fmt or (bec_succor.get("dni") if bec_succor else "")
+            nombre_buscar = nombre_fmt or (bec_succor.get("nombre") if bec_succor else "")
             
             texto_comb = datos_fmt.get("raw_text", "")
             fila_becario = padron.buscar_becario(
@@ -2112,6 +2709,17 @@ class ProcesadorInformes:
                 concordancias = generar_concordancias_genero(datos_bd["sexo"])
                 ctx.update({k.upper(): v for k, v in concordancias.items()})
                 ctx["TRATO_GENERO"] = "Señorita" if datos_bd["sexo"] == "F" else "Señor"
+                
+                # Jalar directamente del padrón RJ_ADJUDICACION, INSTITUCION y CARRERA
+                ctx["RJD_ADJUDICACION"] = datos_bd.get("rj_adjudicacion", "")
+                ctx["RJ_ADJUDICACION"] = ctx["RJD_ADJUDICACION"]
+                inst_raw_bd = datos_bd.get("institucion", "").strip()
+                ctx["INSTITUCION"] = inst_raw_bd.upper()
+                ctx["CARRERA"] = datos_bd.get("carrera", "")
+                
+                # Actualizar INSTITUCION_GLOBAL en Title Case para partes narrativas
+                if inst_raw_bd:
+                    super_contexto["INSTITUCION_GLOBAL"] = formatear_nombre_ies(inst_raw_bd)
             else:
                 ctx["DNI_VALIDADO"] = dni_buscar
                 ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"] = nombre_buscar or "(becario)"
@@ -2121,44 +2729,147 @@ class ProcesadorInformes:
                 ctx["FECHA_INICIO_SIBEC"] = ""
                 ctx["FECHA_FIN_SIBEC"] = ""
                 ctx["TABLA_CICLOS"] = []
+                ctx["RJD_ADJUDICACION"] = ""
+                ctx["RJ_ADJUDICACION"] = ""
+                ctx["INSTITUCION"] = ""
+                ctx["CARRERA"] = ""
                 
-            ctx["EXPEDIENTE"] = expediente
-            ctx["NUMERO_EXPEDIENTE"] = expediente
-            ctx["EXPEDIENTE_BECARIO"] = expediente
-            ctx["RJD_ADJUDICACION"] = datos_succor.get("rjd_adjudicacion", "")
-            ctx["INSTITUCION"] = super_contexto["INSTITUCION_GLOBAL"]
-            ctx["CARRERA"] = datos_succor.get("carrera", "")
+            exp_padron = padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
+            exp_final = exp_padron if exp_padron else expediente
+            ctx["EXPEDIENTE"] = exp_final
+            ctx["NUMERO_EXPEDIENTE"] = exp_final
+            ctx["EXPEDIENTE_BECARIO"] = exp_final
+            
+            # Fallbacks en caso de campos vacíos
+            if not ctx.get("RJD_ADJUDICACION"):
+                ctx["RJD_ADJUDICACION"] = datos_succor.get("rjd_adjudicacion", "")
+                ctx["RJ_ADJUDICACION"] = ctx["RJD_ADJUDICACION"]
+            if not ctx.get("INSTITUCION"):
+                ctx["INSTITUCION"] = super_contexto.get("INSTITUCION_GLOBAL", "")
+            if not ctx.get("CARRERA"):
+                ctx["CARRERA"] = datos_succor.get("carrera", "")
+                
             ctx["FECHA_SOLICITUD_TEXTO"] = datos_fmt.get("fecha_solicitud_texto", "")
             ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
             ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
             ctx["TELEFONO_CONTACTO"] = datos_fmt.get("telefono_contacto", "")
             
-            # Cursos
+            # Extracción y filtrado de Cursos Pendientes por Becario desde el documento de la IES
             cursos_bec = []
-            if bec_succor and bec_succor.get("cursos_pendientes_ies"):
-                cursos_bec = bec_succor["cursos_pendientes_ies"]
-            else:
-                cursos_bec = datos_ies.get("cursos_pendientes", [])
-            ctx["CURSOS_PENDIENTES"] = "\n".join(f"{i+1}. {c}" for i, c in enumerate(cursos_bec))
-            
+            cursos_txt = ""
+            cod_doc_bec = ""
+            f_doc_txt_bec = ""
+            alerta_no_culmina = False
+
+            if is_excel and bloques_ies:
+                cursos_bec, cursos_txt = ExtractorDocumentoIESExcel.buscar_cursos_estudiante(
+                    bloques_ies,
+                    dni=ctx.get("DNI_VALIDADO", ""),
+                    nombres=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
+                    expediente=expediente,
+                    expediente_padron=exp_final,
+                    log=self._log
+                )
+            elif not is_excel and bloques_ies:
+                cursos_bec, cursos_txt, cod_doc_bec, f_doc_txt_bec, alerta_no_culmina, mot = ExtractorDocumentoIES.buscar_cursos_estudiante(
+                    bloques_ies,
+                    dni=ctx.get("DNI_VALIDADO", ""),
+                    nombres=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
+                    expediente=expediente,
+                    expediente_padron=exp_final,
+                    log=self._log
+                )
+                if cod_doc_bec:
+                    ctx["CODIGO_DOC_IES"] = cod_doc_bec
+                if f_doc_txt_bec:
+                    ctx["FECHA_DOC_IES_TEXTO"] = f_doc_txt_bec
+
+            # Si no se halló en IES o es PDF, intentar respaldo de SUCCOR
+            if not cursos_bec:
+                if bec_succor and bec_succor.get("cursos_pendientes_ies"):
+                    cursos_bec = bec_succor["cursos_pendientes_ies"]
+                else:
+                    cursos_bec = datos_ies.get("cursos_pendientes", [])
+                if cursos_bec:
+                    cursos_txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(cursos_bec))
+
+            ctx["CURSOS_PENDIENTES"] = cursos_txt
+
+            if alerta_no_culmina:
+                nom_b = ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "(becario)")
+                msg_adv = f"ATENCIÓN: El documento de la IES indica que el becario {nom_b} no culminará estudios en el semestre 2026-II (requiere cursos en semestres posteriores además del presente)."
+                if not hasattr(self, "advertencias"):
+                    self.advertencias = []
+                if msg_adv not in self.advertencias:
+                    self.advertencias.append(msg_adv)
+                self._log(f"  [ALERTA] {msg_adv}")
+
+            ctx["SEXO"] = datos_bd.get("sexo", "M") if fila_becario else "M"
             super_contexto["becarios"].append(ctx)
-            ref_str = f"Solicitud ingresada por mesa de partes el {ctx['FECHA_SOLICITUD_TEXTO']} (Expediente SIGEDO {expediente})"
+            exp_sigedo = normalizar_sigedo_con_anio(expediente)
+            ref_str = f"Solicitud ingresada por mesa de partes el {ctx['FECHA_SOLICITUD_TEXTO']} (Expediente SIGEDO {exp_sigedo})"
             super_contexto["REFERENCIAS"].append(ref_str)
-            
+
             # Generar Oficio Individual
             ctx_oficio = ctx.copy()
             ctx_oficio["NUMERO_INFORME_GENERAR"] = self.nro_informe
             ctx_oficio["SEMESTRE_SOLICITADO"] = super_contexto["SEMESTRE_SOLICITADO_GLOBAL"]
             ctx_oficio["REFERENCIA_SUCCOR"] = super_contexto["REFERENCIA_SUCCOR"]
+            sigedo_integrado = normalizar_sigedo_con_anio(super_contexto.get("NUMERO_SIGEDO_GLOBAL", ""))
+            sigedo_c = sigedo_integrado.split("-")[0] if sigedo_integrado else ""
+            ctx_oficio["SIGEDO_CORTO"] = sigedo_c
+            ctx_oficio["NUMERO_SIGEDO"] = sigedo_integrado
+            ctx_oficio["NUMERO_SIGEDO_GLOBAL"] = sigedo_integrado
+            ctx_oficio["NOMBRE_SALIDA_OFICIO"] = f"{sigedo_c}_Oficio_{idx+1}.docx"
             try:
-                ruta_of = gen_word.generar_oficio(ctx_oficio, self._log)
+                ruta_of = gen_oficio.generar(ctx_oficio, self._log)
                 rutas_salida.append(ruta_of)
             except Exception as e:
                 self._log(f"Error generando oficio {idx+1}: {e}")
 
+        # Recopilar todos los códigos de documentos IES identificados para numeral 2.6
+        codigos_ies_identificados = []
+        for b in super_contexto["becarios"]:
+            c_doc = b.get("CODIGO_DOC_IES", "")
+            if c_doc and c_doc not in codigos_ies_identificados:
+                codigos_ies_identificados.append(c_doc)
+        if not codigos_ies_identificados and ref_doc_ies:
+            codigos_ies_identificados.append(ref_doc_ies)
+
+        # Formatear para el numeral 2.6 (obviando fecha si son documentos múltiples)
+        if not is_excel and codigos_ies_identificados:
+            ref_multiple = formatear_referencia_documentos_multiples(codigos_ies_identificados)
+            super_contexto["REFERENCIA_DOC_IES"] = ref_multiple
+            super_contexto["CODIGO_DOC_IES"] = ref_multiple
+            super_contexto["FECHA_DOC_IES_TEXTO"] = ""
+            self._log(f"  Referencia Doc. IES consolidada (numeral 2.6): {ref_multiple}")
+
+        # (Nota: La referencia del documento IES se omite del cuadro de referencias por solicitud)
+
         # Añadir ref SUCCOR a referencias
-        super_contexto["REFERENCIAS"].append(super_contexto["REFERENCIA_SUCCOR"])
-        super_contexto["FECHAS_SOLICITUD_TEXTO"] = super_contexto["becarios"][0]["FECHA_SOLICITUD_TEXTO"] if super_contexto["becarios"] else ""
+        if super_contexto.get("REFERENCIA_SUCCOR") and super_contexto["REFERENCIA_SUCCOR"] not in super_contexto["REFERENCIAS"]:
+            super_contexto["REFERENCIAS"].append(super_contexto["REFERENCIA_SUCCOR"])
+            
+        super_contexto["BECA_TITULO_GLOBAL"] = determinar_beca_convocatoria_multiple(super_contexto["becarios"], datos_succor)
+        if fechas_solicitud_todas:
+            super_contexto["FECHAS_SOLICITUD_TEXTO"] = formatear_fechas_solicitud(fechas_solicitud_todas)
+        else:
+            super_contexto["FECHAS_SOLICITUD_TEXTO"] = super_contexto["becarios"][0]["FECHA_SOLICITUD_TEXTO"] if super_contexto["becarios"] else ""
+
+        fechas_unicas = sorted(list({f for f in fechas_solicitud_todas if f is not None}))
+        super_contexto["CON_FECHA_O_FECHAS"] = "con fechas" if len(fechas_unicas) > 1 else "con fecha"
+
+        # Detección de género: si el 100% son Femenino, se usa gramática femenina
+        todos_femeninos = len(super_contexto["becarios"]) > 0 and all(b.get("SEXO") == "F" for b in super_contexto["becarios"])
+        super_contexto["TODOS_FEMENINOS"] = todos_femeninos
+
+        # Formatear REFERENCIAS con literales y tabulación para sangría francesa
+        refs_formateadas = []
+        letras = "abcdefghijklmnopqrstuvwxyz"
+        for i, ref in enumerate(super_contexto["REFERENCIAS"]):
+            letra = letras[i] if i < len(letras) else str(i)
+            refs_formateadas.append(f"{letra})\t{ref}")
+        super_contexto["REFERENCIAS"] = refs_formateadas
 
         self._progreso(0.8, "Generando Informe Múltiple...")
         # Generar Informe Múltiple
@@ -2168,11 +2879,14 @@ class ProcesadorInformes:
         except Exception as e:
             self._log(f"Error generando informe múltiple: {e}")
             
-        self._progreso(0.9, "Generando Notificación Múltiple...")
-        # Generar Notificación Múltiple
+        self._progreso(0.9, "Generando Notificaciones Múltiples...")
+        # Generar Notificaciones Múltiples (casilla y/o correo según autorización)
         try:
             ruta_not = gen_excel.generar_multiple(super_contexto, self._log)
-            rutas_salida.append(ruta_not)
+            if isinstance(ruta_not, list):
+                rutas_salida.extend([r for r in ruta_not if r])
+            elif ruta_not:
+                rutas_salida.append(ruta_not)
         except Exception as e:
             self._log(f"Error generando notificación múltiple: {e}")
 

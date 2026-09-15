@@ -16,9 +16,13 @@ LogCallback = Callable[[str], None]
 
 
 def get_base_dir() -> Path:
-    """Devuelve el directorio base del script o ejecutable congelado con PyInstaller."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
+        exe_dir = Path(sys.executable).resolve().parent
+        if exe_dir.name.lower() == "main" and exe_dir.parent.name.lower() == "dist":
+            return exe_dir.parent.parent
+        if exe_dir.name.lower() == "dist":
+            return exe_dir.parent
+        return exe_dir
     return Path(__file__).resolve().parent
 
 
@@ -41,6 +45,31 @@ def obtener_ruta_plantilla() -> Path:
 
 PLANTILLA_PATH = obtener_ruta_plantilla()
 SALIDA_DIR = BASE_DIR / "Informes_Generados"
+
+
+def formatear_nombre_ies(nombre: str) -> str:
+    """Formatea el nombre de la IES a tipo título respetando conectores en minúsculas.
+    Convierte conectores como 'de', 'del', 'y', 'e', 'la', 'las', 'el', 'los', 'en', 'para', 'por', 'con', 'a' a minúsculas.
+    Ej: 'UNIVERSIDAD PERUANA DE CIENCIAS APLICADAS' -> 'Universidad Peruana de Ciencias Aplicadas'
+    Ej: 'PONTIFICIA UNIVERSIDAD CATÓLICA DEL PERÚ' -> 'Pontificia Universidad Católica del Perú'"""
+    if not nombre:
+        return ""
+    palabras = str(nombre).strip().split()
+    if not palabras:
+        return ""
+
+    conectores = {"de", "del", "y", "e", "la", "las", "el", "los", "en", "para", "por", "con", "a"}
+    palabras_fmt = []
+    for i, p in enumerate(palabras):
+        p_low = p.lower()
+        if i == 0:
+            palabras_fmt.append(p_low.capitalize())
+        elif p_low in conectores:
+            palabras_fmt.append(p_low)
+        else:
+            palabras_fmt.append(p_low.capitalize())
+
+    return " ".join(palabras_fmt)
 
 
 class GeneradorWord:
@@ -278,8 +307,12 @@ class GeneradorWord:
             val_dni = str(contexto["DNI_VALIDADO"])
             reemplazos_fallback.append(("75551078", val_dni))
         if contexto.get("INSTITUCION"):
-            val_ies = str(contexto["INSTITUCION"])
-            reemplazos_fallback.append(("Universidad Peruana Cayetano Heredia", val_ies))
+            val_ies_raw = str(contexto["INSTITUCION"])
+            val_ies_fmt = formatear_nombre_ies(val_ies_raw)
+            reemplazos_fallback.extend([
+                ("Universidad Peruana Cayetano Heredia", val_ies_fmt),
+                ("UNIVERSIDAD PERUANA CAYETANO HEREDIA", val_ies_raw.upper()),
+            ])
         if contexto.get("CODIGO_DOC_IES"):
             val_doc_ies = str(contexto["CODIGO_DOC_IES"])
             reemplazos_fallback.append(("CAR.OUB-UPCH-1565-2026", val_doc_ies))
@@ -703,5 +736,281 @@ class GeneradorWord:
         
         log(f"Guardando Informe Múltiple en: {ruta_salida.name}")
         doc.save(ruta_salida)
-        return ruta_salida
 
+        # Post-procesamiento: Reemplazo profundo y formato de referencias
+        from docx import Document
+        from docx.shared import Inches, Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        import re
+
+        doc_final = Document(ruta_salida)
+        modificado = False
+
+        # Corrección global: Asegurar año en SIGEDO INTEGRADO (ej. SIGEDO INTEGRADO: 59288 -> 59288-2026)
+        for p in doc_final.paragraphs:
+            if "SIGEDO INTEGRADO" in p.text:
+                if not re.search(r"SIGEDO\s+INTEGRADO\s*:\s*\d+-\d{4}", p.text):
+                    p.text = re.sub(r'(SIGEDO\s+INTEGRADO\s*:\s*)(\d{4,8})\b', r'\g<1>\g<2>-2026', p.text)
+                    modificado = True
+        for t in doc_final.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        if "SIGEDO INTEGRADO" in p.text:
+                            if not re.search(r"SIGEDO\s+INTEGRADO\s*:\s*\d+-\d{4}", p.text):
+                                p.text = re.sub(r'(SIGEDO\s+INTEGRADO\s*:\s*)(\d{4,8})\b', r'\g<1>\g<2>-2026', p.text)
+                                modificado = True
+
+        # Corrección global: Beca y Convocatoria real en ASUNTO y numeral 2.1
+        beca_real = super_contexto.get("BECA_TITULO_GLOBAL", "")
+        if beca_real:
+            for p in doc_final.paragraphs:
+                if "Beca 18 - Convocatoria 2021" in p.text:
+                    p.text = p.text.replace("Beca 18 - Convocatoria 2021", beca_real)
+                    modificado = True
+            for t in doc_final.tables:
+                for row in t.rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            if "Beca 18 - Convocatoria 2021" in p.text:
+                                p.text = p.text.replace("Beca 18 - Convocatoria 2021", beca_real)
+                                modificado = True
+
+        # 0. Reemplazar número de informe en el título (INFORME Nº XXXX-2026...)
+        # Requerimiento: Arial 11, todo en mayúsculas, negrita y subrayado
+        num_inf = super_contexto.get("NUMERO_INFORME_GENERAR", "")
+        patron_num_inf = re.compile(r'(INFORME\s+N[ºo\.]?\s*)\d*(-\d{4}-MINEDU/VMGI-PRONABEC-DIBEC-SUS)', re.IGNORECASE)
+        for p in doc_final.paragraphs[:5]:
+            if patron_num_inf.search(p.text) or "MINEDU/VMGI-PRONABEC-DIBEC-SUS" in p.text:
+                if num_inf and num_inf != "S-N":
+                    nuevo_txt = patron_num_inf.sub(rf"\g<1>{num_inf}\g<2>", p.text)
+                else:
+                    nuevo_txt = p.text
+                nuevo_txt = nuevo_txt.upper()
+                p.text = nuevo_txt
+                for r in p.runs:
+                    r.font.name = "Arial"
+                    r.font.size = Pt(11)
+                    r.bold = True
+                    r.underline = True
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                modificado = True
+                break
+
+        # A. Actualizar nombre de la IES a Title Case respetando conectores en minúsculas ('de', 'del', 'y', etc.)
+        # en todas las partes EXCEPTO Cuadro N° 1 y Cuadro N° 2
+        inst_real = super_contexto.get("INSTITUCION_GLOBAL", "")
+        if inst_real:
+            inst_upper = inst_real.upper().strip()
+            inst_title = formatear_nombre_ies(inst_real)
+            inst_wrong = " ".join(w.capitalize() for w in inst_real.split())
+            texto_ies_ant = "Universidad Peruana de Ciencias Aplicadas"
+            texto_ies_ant_wrong = "Universidad Peruana De Ciencias Aplicadas"
+            
+            # A1. Párrafos narrativos (numeral 2.6, etc.)
+            for p in doc_final.paragraphs:
+                if inst_upper in p.text:
+                    p.text = p.text.replace(inst_upper, inst_title)
+                    modificado = True
+                if inst_wrong in p.text:
+                    p.text = p.text.replace(inst_wrong, inst_title)
+                    modificado = True
+                if texto_ies_ant in p.text:
+                    p.text = p.text.replace(texto_ies_ant, inst_title)
+                    modificado = True
+                if texto_ies_ant_wrong in p.text:
+                    p.text = p.text.replace(texto_ies_ant_wrong, inst_title)
+                    modificado = True
+
+            # A2. Tabla 0 (Encabezado: ASUNTO)
+            if len(doc_final.tables) > 0:
+                for row in doc_final.tables[0].rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            if inst_upper in p.text:
+                                p.text = p.text.replace(inst_upper, inst_title)
+                                modificado = True
+                            if inst_wrong in p.text:
+                                p.text = p.text.replace(inst_wrong, inst_title)
+                                modificado = True
+                            if texto_ies_ant in p.text:
+                                p.text = p.text.replace(texto_ies_ant, inst_title)
+                                modificado = True
+                            if texto_ies_ant_wrong in p.text:
+                                p.text = p.text.replace(texto_ies_ant_wrong, inst_title)
+                                modificado = True
+
+        # B. Actualizar informe SUCCOR: cambiar a 'Informe N° ' en todas sus menciones
+        succor_real = super_contexto.get("NOMBRE_INFORME_SUCCOR", "")
+        if succor_real:
+            succor_real = re.sub(r"^\s*(?:INFORME|Informe)\s+(?:N[º°o\.]*|N\.o|No)\s*", "Informe N° ", succor_real, flags=re.IGNORECASE)
+            patron_succor_4164 = re.compile(r'Informe.*?4164-2026-MINEDU/VMGI-PRONABEC-DICONCI-SUCCOR-LIMA', re.IGNORECASE)
+            for p in doc_final.paragraphs:
+                if patron_succor_4164.search(p.text):
+                    p.text = patron_succor_4164.sub(succor_real, p.text)
+                    modificado = True
+            for t in doc_final.tables:
+                for row in t.rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            if patron_succor_4164.search(p.text):
+                                p.text = patron_succor_4164.sub(succor_real, p.text)
+                                modificado = True
+
+        patron_inf_succor = re.compile(r'\b(?:INFORME|Informe)\s+(?:N[º°o\.]*|N\.o|No)\s*(\d+-\d{4}-MINEDU/VMGI-PRONABEC-(?:DICONCI-)?SUCCOR)', re.IGNORECASE)
+        for p in doc_final.paragraphs:
+            if patron_inf_succor.search(p.text):
+                p.text = patron_inf_succor.sub(r"Informe N° \1", p.text)
+                modificado = True
+        for t in doc_final.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        if patron_inf_succor.search(p.text):
+                            p.text = patron_inf_succor.sub(r"Informe N° \1", p.text)
+                            modificado = True
+
+        # C. Reemplazo del documento IES en numeral 2.6 (obviando fecha en documentos múltiples)
+        ref_ies_real = super_contexto.get("REFERENCIA_DOC_IES", "")
+        if ref_ies_real:
+            patron_26 = re.compile(r'Carta\s+N[º°o]\s*º(?:\s*,\s*de\s+fecha\s+[^,\.\n]+)?', re.IGNORECASE)
+            for p in doc_final.paragraphs:
+                if patron_26.search(p.text):
+                    p.text = patron_26.sub(ref_ies_real, p.text)
+                    modificado = True
+                elif "Carta Nº º" in p.text or "Carta Nº º," in p.text:
+                    p.text = p.text.replace("Carta Nº º,", f"{ref_ies_real},").replace("Carta Nº º", ref_ies_real)
+                    modificado = True
+
+        # D. Formato de REFERENCIAS (Tabla 0, Fila 3, Celda 2): Párrafos independientes con sangría francesa a Arial 11 pt
+        # y adición del año '-2026' al Expediente SIGEDO
+        referencias_lista = super_contexto.get("REFERENCIAS", [])
+        if referencias_lista and len(doc_final.tables) > 0 and len(doc_final.tables[0].rows) > 3:
+            row_ref = doc_final.tables[0].rows[3]
+            for c_idx in (0, 1):
+                for p in row_ref.cells[c_idx].paragraphs:
+                    for r in p.runs:
+                        r.font.name = "Arial"
+                        r.font.size = Pt(11)
+
+            cell_ref = row_ref.cells[2]
+            cell_ref.text = ""
+            for i, ref_texto in enumerate(referencias_lista):
+                ref_texto_limpio = re.sub(r'\b(?:INFORME|Informe)\s+(?:N[º°o\.]*|N\.o|No)\s*(\d+-\d{4}-MINEDU/VMGI-PRONABEC)', r'Informe N° \1', ref_texto, flags=re.IGNORECASE)
+                # Asegurar año -2026 en SIGEDO
+                ref_texto_limpio = re.sub(r'\(Expediente SIGEDO\s+(\d{4,8})\)(?!-2026)', r'(Expediente SIGEDO \1-2026)', ref_texto_limpio)
+                p = cell_ref.paragraphs[0] if i == 0 else cell_ref.add_paragraph()
+                p.text = ref_texto_limpio
+                p.paragraph_format.left_indent = Inches(0.25)
+                p.paragraph_format.first_line_indent = Inches(-0.25)
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.line_spacing = 1.0
+                p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                for r in p.runs:
+                    r.font.name = "Arial"
+                    r.font.size = Pt(11)
+            modificado = True
+
+        # E. Numeral 2.5: Reemplazo de fechas concatenadas ('con fecha' vs 'con fechas')
+        fechas_sol_texto = super_contexto.get("FECHAS_SOLICITUD_TEXTO", "")
+        if fechas_sol_texto:
+            prefijo_f = "con fechas" if (" y " in fechas_sol_texto or "," in fechas_sol_texto) else "con fecha"
+            patron_num25 = re.compile(r'(ingresadas por mesa de partes\s+)(?:con\s+fechas?|con\s+fecha:?)\s*(.*?)([\.,]\s*por lo tanto)', re.IGNORECASE)
+            for p in doc_final.paragraphs:
+                if "ingresadas por mesa de partes" in p.text and "plazo de presentación" in p.text:
+                    if patron_num25.search(p.text):
+                        p.text = patron_num25.sub(rf"\g<1>{prefijo_f} {fechas_sol_texto}\g<3>", p.text)
+                        for r in p.runs:
+                            r.font.name = "Arial"
+                            r.font.size = Pt(11)
+                        modificado = True
+
+        # F. Numeral 3.1: Formatear a Arial 11 pt y asegurar 'Informe N° ' SUCCOR
+        for p in doc_final.paragraphs:
+            if "De conformidad a lo informado por la Subdirección" in p.text:
+                if patron_inf_succor.search(p.text):
+                    p.text = patron_inf_succor.sub(r"Informe N° \1", p.text)
+                for r in p.runs:
+                    r.font.name = "Arial"
+                    r.font.size = Pt(11)
+                modificado = True
+
+        # G. Concordancia de Género Femenino (si todos los becarios son de sexo femenino)
+        todos_femeninos = super_contexto.get("TODOS_FEMENINOS", False)
+        if todos_femeninos:
+            # 1. En Tabla 0 (ASUNTO)
+            if len(doc_final.tables) > 0:
+                for row in doc_final.tables[0].rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            if "becarios" in p.text.lower():
+                                p.text = re.sub(r'\b(por\s+\d+\s+)becarios\b', r'\g<1>becarias', p.text, flags=re.IGNORECASE)
+                                p.text = re.sub(r'\bde\s+los\s+becarios\b', 'de las becarias', p.text, flags=re.IGNORECASE)
+                                p.text = re.sub(r'\blos\s+(\d+\s+)?becarios\b', r'las \g<1>becarias', p.text, flags=re.IGNORECASE)
+                                modificado = True
+
+            # 2. En párrafos narrativos
+            for p in doc_final.paragraphs:
+                txt_ant = p.text
+                if "Becarios que solicitan" in p.text:
+                    p.text = p.text.replace("Becarios que solicitan", "Becarias que solicitan")
+                elif "Becarios y relación de cursos" in p.text:
+                    p.text = p.text.replace("Becarios y relación de cursos", "Becarias y relación de cursos")
+                elif any(k in p.text for k in ["traslada la solicitud", "ingresadas por mesa de partes", "remite la relación de cursos", "solicitudes de los becarios", "De conformidad a lo informado", "revisión de las solicitudes"]):
+                    p.text = re.sub(r'\b(de\s+\d+\s+)becarios\b', r'\g<1>becarias', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\b(Las solicitudes de\s+)los(\s+\d+\s+)becarios\b', r'\g<1>las\g<2>becarias', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\blos(\s+\d+\s+)becarios\s+señalados\b', r'las\g<1>becarias señaladas', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\blos\s+citados\s+becarios\b', 'las citadas becarias', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\b(solicitudes?\s+de\s+)los\s+becarios\b', r'\g<1>las becarias', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\blos(\s+\d+\s+)becarios\s+detallados\b', r'las\g<1>becarias detalladas', p.text, flags=re.IGNORECASE)
+                    p.text = re.sub(r'\blos(\s+\d+\s+)becarios\s+cumplen\b', r'las\g<1>becarias cumplen', p.text, flags=re.IGNORECASE)
+                if p.text != txt_ant:
+                    modificado = True
+
+        # H. Cuadro N° 2: Formatear Cursos Pendientes con numeración (1., 2., 3...) y sangría francesa
+        if len(doc_final.tables) > 2:
+            t2 = doc_final.tables[2]
+            for r_idx in range(2, len(t2.rows)):
+                cell_cursos = t2.rows[r_idx].cells[2]
+                raw_txt = cell_cursos.text.strip()
+                if raw_txt:
+                    lineas_raw = [l.strip() for l in raw_txt.splitlines() if l.strip()]
+                    cursos_limpios = []
+                    for l in lineas_raw:
+                        l_prot = re.sub(r'\bECOLOGY\s*,\s*ENVIRONMENT', 'ECOLOGY###COMMA###ENVIRONMENT', l, flags=re.IGNORECASE)
+                        if ";" in l_prot:
+                            subpartes = re.split(r";+", l_prot)
+                        elif len(re.findall(r'\b\d+[\.\)]', l_prot)) > 1:
+                            subpartes = re.split(r"(?<=\w)\s+(?=\d+[\.\)]\s+)", l_prot)
+                        elif "," in l_prot and not re.match(r'^\d+[\.\)]\s+', l):
+                            subpartes = re.split(r",\s*(?![^()]*\))", l_prot)
+                        else:
+                            subpartes = [l_prot]
+
+                        for sp in subpartes:
+                            sp_clean = sp.replace("###COMMA###", ", ").strip()
+                            sp_clean = re.sub(r"^\s*\d+[\.\)]\s*", "", sp_clean).strip()
+                            if sp_clean:
+                                cursos_limpios.append(sp_clean)
+                    
+                    if cursos_limpios:
+                        cell_cursos.text = ""
+                        for c_i, c_nom in enumerate(cursos_limpios):
+                            p_c = cell_cursos.paragraphs[0] if c_i == 0 else cell_cursos.add_paragraph()
+                            p_c.text = f"{c_i+1}. {c_nom.upper()}"
+                            p_c.paragraph_format.left_indent = Inches(0.22)
+                            p_c.paragraph_format.first_line_indent = Inches(-0.22)
+                            p_c.paragraph_format.space_after = Pt(2)
+                            p_c.paragraph_format.space_before = Pt(0)
+                            p_c.paragraph_format.line_spacing = 1.0
+                            p_c.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                            for r in p_c.runs:
+                                r.font.name = "Arial"
+                                r.font.size = Pt(8.5)
+                        modificado = True
+
+        if modificado:
+            doc_final.save(ruta_salida)
+            log("Post-procesamiento de formato y variables aplicado en documento final.")
+
+        return ruta_salida
