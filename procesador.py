@@ -265,21 +265,19 @@ class ExtractorFormatoAutogenerado:
     )
 
     @classmethod
-    def extraer(cls, ruta_pdf: str | Path) -> dict:
-        ruta = Path(ruta_pdf)
+    def extraer_desde_texto(cls, texto_completo: str) -> dict:
+        """Extrae los datos de un becario a partir del texto de su formato autogenerado."""
         resultado = {
             "fecha_solicitud": None,
             "fecha_solicitud_texto": "",
             "numero_expediente": "",
             "correo_electronico": "",
+            "autoriza_casilla": False,
+            "telefono_contacto": "",
             "dni": "",
             "nombres": "",
+            "raw_text": texto_completo,
         }
-
-        with pdfplumber.open(ruta) as pdf:
-            texto_completo = "\n".join(
-                p.extract_text() or "" for p in pdf.pages
-            )
 
         # Buscar fecha/hora cercana a palabras clave
         texto_lower = texto_completo.lower()
@@ -336,7 +334,12 @@ class ExtractorFormatoAutogenerado:
         if m_tel:
             resultado["telefono_contacto"] = m_tel.group(1).strip()
         else:
-            resultado["telefono_contacto"] = ""
+            # Fallback para celular peruano (9 dígitos que empiezan en 9)
+            m_cel = re.search(r"\b(9\d{8})\b", texto_completo)
+            if m_cel:
+                resultado["telefono_contacto"] = m_cel.group(1).strip()
+            else:
+                resultado["telefono_contacto"] = ""
 
         # Extraer DNI y Nombres del formato autogenerado
         m_rem = cls.PATRON_REMITENTE_DNI.search(texto_completo)
@@ -350,6 +353,103 @@ class ExtractorFormatoAutogenerado:
 
         resultado["raw_text"] = texto_completo
         return resultado
+
+    @classmethod
+    def extraer(cls, ruta_pdf: str | Path) -> dict:
+        ruta = Path(ruta_pdf)
+        with pdfplumber.open(ruta) as pdf:
+            texto_completo = "\n".join(
+                p.extract_text() or "" for p in pdf.pages
+            )
+        return cls.extraer_desde_texto(texto_completo)
+
+    @classmethod
+    def extraer_bloques_formatos(cls, ruta_pdf: str | Path, log: LogCallback | None = None) -> list[dict]:
+        """Extrae la información individual de 2 a 5 becarios de un PDF consolidado que une varios formatos autogenerados.
+        Segmenta de forma precisa página por página o bloque por bloque identificando cada becario por su DNI,
+        expediente y encabezados oficiales, evitando cualquier cruce o confusión de datos."""
+        _log = log or (lambda msg: None)
+        ruta = Path(ruta_pdf)
+        if not ruta.exists():
+            _log(f"Error: El archivo de formato consolidado no existe: {ruta}")
+            return []
+
+        paginas_texto = []
+        try:
+            with pdfplumber.open(ruta) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    txt = page.extract_text() or ""
+                    paginas_texto.append(txt)
+        except Exception as e:
+            _log(f"Error leyendo PDF consolidado '{ruta.name}': {e}")
+            return []
+
+        if not paginas_texto:
+            _log("Error: No se pudo extraer texto del PDF consolidado.")
+            return []
+
+        bloques_textos = []
+        curr_paginas = []
+        curr_dni = ""
+        curr_exp = ""
+
+        for txt in paginas_texto:
+            m_rem = cls.PATRON_REMITENTE_DNI.search(txt)
+            m_dni = cls.PATRON_DNI.search(txt)
+            dni_pag = m_rem.group(2).strip() if m_rem else (m_dni.group(1).strip() if m_dni else "")
+            m_exp = cls.PATRON_EXPEDIENTE.search(txt)
+            exp_pag = m_exp.group(1).strip() if m_exp else ""
+            
+            txt_lower = txt.lower()
+            es_encabezado = any(w in txt_lower for w in ["ficha de registro", "mesa de partes digital", "datos del remitente", "anexo 01", "anexo 1", "anexo n"])
+
+            if curr_paginas:
+                nuevo = False
+                if dni_pag and curr_dni and dni_pag != curr_dni:
+                    nuevo = True
+                elif exp_pag and curr_exp and exp_pag != curr_exp:
+                    nuevo = True
+                elif es_encabezado and (curr_dni or curr_exp or any(any(w in p.lower() for w in ["ficha de registro", "datos del remitente"]) for p in curr_paginas)):
+                    if not dni_pag or (curr_dni and dni_pag != curr_dni):
+                        nuevo = True
+
+                if nuevo:
+                    bloques_textos.append("\n".join(curr_paginas))
+                    curr_paginas = [txt]
+                    curr_dni = dni_pag
+                    curr_exp = exp_pag
+                else:
+                    curr_paginas.append(txt)
+                    if not curr_dni and dni_pag:
+                        curr_dni = dni_pag
+                    if not curr_exp and exp_pag:
+                        curr_exp = exp_pag
+            else:
+                curr_paginas.append(txt)
+                curr_dni = dni_pag
+                curr_exp = exp_pag
+
+        if curr_paginas:
+            bloques_textos.append("\n".join(curr_paginas))
+
+        # Procesar y validar cada bloque individualmente asegurando unicidad por DNI
+        resultados = []
+        dnis_vistos = set()
+        for idx_b, b_txt in enumerate(bloques_textos):
+            datos = cls.extraer_desde_texto(b_txt)
+            d = datos.get("dni", "")
+            if d and d in dnis_vistos:
+                continue
+            if d:
+                dnis_vistos.add(d)
+            if datos.get("dni") or datos.get("numero_expediente") or datos.get("nombres"):
+                resultados.append(datos)
+
+        _log(f"  [Formatos Consolidado] Se reconocieron {len(resultados)} becario(s) en el PDF:")
+        for idx, r in enumerate(resultados):
+            _log(f"    -> Becario {idx+1}: {r.get('nombres') or '(sin nombre)'} | DNI: {r.get('dni') or 'N/D'} | Exp: {r.get('numero_expediente') or 'N/D'} | Solicitud: {r.get('fecha_solicitud_texto') or 'N/D'}")
+
+        return resultados
 
 
 # ============================================================
@@ -1099,6 +1199,25 @@ class ExtractorDocumentoIESExcel:
         return unicos
 
     @classmethod
+    def parse_creditos_electivos(cls, val: Any) -> float:
+        """Parsea el valor de créditos electivos pendientes a float."""
+        if val is None or pd.isna(val):
+            return 0.0
+        val_str = str(val).strip()
+        if not val_str or val_str.lower() in ("nan", "none", "-", "ninguno", "no", ""):
+            return 0.0
+        try:
+            return float(val_str.replace(",", "."))
+        except (ValueError, TypeError):
+            m = re.search(r"(\d+(?:\.\d+)?)", val_str)
+            if m:
+                try:
+                    return float(m.group(1))
+                except (ValueError, TypeError):
+                    return 0.0
+            return 0.0
+
+    @classmethod
     def extraer_bloques_estudiantes(cls, ruta_excel: str | Path, log: LogCallback | None = None) -> list[dict]:
         """Extrae los bloques de estudiantes y sus cursos agrupando filas secundarias."""
         _log = log or (lambda msg: None)
@@ -1152,12 +1271,37 @@ class ExtractorDocumentoIESExcel:
                 if not col_cursos or mejor_puntaje < 4:
                     col_cursos = next((c for c in df_sheet.columns if "CURSO" in cls._norm(c) and "PENDIENTE" in cls._norm(c) and "N" not in cls._norm(c)), None)
 
+                # Detección columna créditos electivos pendientes
+                col_electivos = None
+                # Prioridad 1: Coincidencia con TOTAL DE CREDITOS ELECTIVOS PENDIENTES PARA CULMINAR LA CARRERA
+                for c in df_sheet.columns:
+                    c_n = cls._norm(c)
+                    if "TOTAL DE CREDITOS ELECTIVOS PENDIENTES PARA CULMINAR LA CARRERA" in c_n:
+                        col_electivos = c
+                        break
+                # Prioridad 2: CREDITOS + ELECTIVOS + PENDIENTES
+                if not col_electivos:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "CREDITO" in c_n and "ELECTIVO" in c_n and "PENDIENTE" in c_n:
+                            col_electivos = c
+                            break
+                # Prioridad 3: ELECTIVOS + PENDIENTES (excluyendo si culminaría o matriculado)
+                if not col_electivos:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "ELECTIVO" in c_n and "PENDIENTE" in c_n and not any(w in c_n for w in ["CULMINAR", "MATRICU"]):
+                            col_electivos = c
+                            break
+
                 current_student = None
                 for _, row in df_sheet.iterrows():
                     d_val = limpiar_dni(row[col_dni]) if col_dni else ""
                     n_val = str(row[col_nom]).strip() if col_nom else ""
                     s_val = str(row[col_sig]).strip().split(".")[0] if col_sig else ""
                     c_val = str(row[col_cursos]).strip() if col_cursos else ""
+                    e_raw = row[col_electivos] if col_electivos else None
+                    cred_elec = cls.parse_creditos_electivos(e_raw)
 
                     if d_val or (n_val and n_val.lower() != "nan" and len(cls._norm(n_val)) > 3):
                         if current_student:
@@ -1167,11 +1311,14 @@ class ExtractorDocumentoIESExcel:
                             "dni": d_val,
                             "nombre": n_val,
                             "sigedo": s_val,
-                            "cursos": []
+                            "cursos": [],
+                            "creditos_electivos": cred_elec
                         }
                         if c_val and c_val.lower() != "nan":
                             current_student["cursos"].append(c_val)
                     elif current_student:
+                        if cred_elec > 0 and current_student.get("creditos_electivos", 0.0) == 0.0:
+                            current_student["creditos_electivos"] = cred_elec
                         if c_val and c_val.lower() != "nan":
                             current_student["cursos"].append(c_val)
 
@@ -1185,7 +1332,7 @@ class ExtractorDocumentoIESExcel:
         return todos_los_bloques
 
     @classmethod
-    def buscar_cursos_estudiante(
+    def buscar_estudiante(
         cls,
         bloques: list[dict],
         dni: str = "",
@@ -1193,8 +1340,8 @@ class ExtractorDocumentoIESExcel:
         expediente: str = "",
         expediente_padron: str = "",
         log: LogCallback | None = None
-    ) -> tuple[list[str], str]:
-        """Busca a un becario en los bloques de la IES por DNI, Nombres o Expediente/Sigedo y retorna los cursos."""
+    ) -> dict | None:
+        """Busca a un becario en los bloques de la IES por DNI, Nombres o Expediente/Sigedo y retorna el bloque completo."""
         _log = log or (lambda msg: None)
         dni_clean = limpiar_dni(dni)
         nombres_norm = cls._norm(nombres)
@@ -1205,17 +1352,15 @@ class ExtractorDocumentoIESExcel:
         if dni_clean:
             for b in bloques:
                 if b.get("dni") and (b["dni"] == dni_clean or b["dni"].endswith(dni_clean) or dni_clean.endswith(b["dni"])):
-                    _log(f"  [IES Excel] Becario hallado por DNI ({dni_clean}): {len(b['cursos'])} cursos")
-                    txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b["cursos"]))
-                    return b["cursos"], txt
+                    _log(f"  [IES Excel] Becario hallado por DNI ({dni_clean}): {len(b.get('cursos', []))} cursos, {b.get('creditos_electivos', 0)} cred. electivos")
+                    return b
 
         # 2. Búsqueda por Sigedo / Expediente
         if exp_list:
             for b in bloques:
                 if b.get("sigedo") and b["sigedo"] in exp_list:
-                    _log(f"  [IES Excel] Becario hallado por Expediente/SIGEDO ({b['sigedo']}): {len(b['cursos'])} cursos")
-                    txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b["cursos"]))
-                    return b["cursos"], txt
+                    _log(f"  [IES Excel] Becario hallado por Expediente/SIGEDO ({b['sigedo']}): {len(b.get('cursos', []))} cursos, {b.get('creditos_electivos', 0)} cred. electivos")
+                    return b
 
         # 3. Búsqueda por Nombres y Apellidos (coincidencia de tokens >= 2)
         if tokens_target:
@@ -1228,11 +1373,34 @@ class ExtractorDocumentoIESExcel:
                     max_matches = matches
                     mejor = b
             if mejor and max_matches >= 2:
-                _log(f"  [IES Excel] Becario hallado por Nombres ({mejor.get('nombre')}): {len(mejor['cursos'])} cursos")
-                txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(mejor["cursos"]))
-                return mejor["cursos"], txt
+                _log(f"  [IES Excel] Becario hallado por Nombres ({mejor.get('nombre')}): {len(mejor.get('cursos', []))} cursos, {mejor.get('creditos_electivos', 0)} cred. electivos")
+                return mejor
 
         _log("  [IES Excel] Becario no encontrado en el documento de la IES.")
+        return None
+
+    @classmethod
+    def buscar_cursos_estudiante(
+        cls,
+        bloques: list[dict],
+        dni: str = "",
+        nombres: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
+        log: LogCallback | None = None
+    ) -> tuple[list[str], str]:
+        """Busca a un becario en los bloques de la IES por DNI, Nombres o Expediente/Sigedo y retorna los cursos."""
+        b = cls.buscar_estudiante(
+            bloques,
+            dni=dni,
+            nombres=nombres,
+            expediente=expediente,
+            expediente_padron=expediente_padron,
+            log=log
+        )
+        if b:
+            txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b.get("cursos", [])))
+            return b.get("cursos", []), txt
         return [], ""
 
     @classmethod
@@ -1253,6 +1421,8 @@ class ExtractorDocumentoIESExcel:
             "fecha_doc_ies_texto": "",
             "cursos_pendientes": [],
             "cursos_pendientes_texto": "",
+            "creditos_electivos": 0.0,
+            "estudiante_bloque": None,
             "ies_validada": True,
         }
 
@@ -1300,7 +1470,7 @@ class ExtractorDocumentoIESExcel:
 
             if dni_validado or nombres_y_apellidos or expediente or expediente_padron:
                 bloques = cls.extraer_bloques_estudiantes(ruta, log=_log)
-                cursos, cursos_txt = cls.buscar_cursos_estudiante(
+                b = cls.buscar_estudiante(
                     bloques,
                     dni=dni_validado,
                     nombres=nombres_y_apellidos,
@@ -1308,8 +1478,15 @@ class ExtractorDocumentoIESExcel:
                     expediente_padron=expediente_padron,
                     log=_log
                 )
-                resultado["cursos_pendientes"] = cursos
-                resultado["cursos_pendientes_texto"] = cursos_txt
+                if b:
+                    resultado["cursos_pendientes"] = b.get("cursos", [])
+                    resultado["cursos_pendientes_texto"] = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b.get("cursos", [])))
+                    resultado["creditos_electivos"] = b.get("creditos_electivos", 0.0)
+                    resultado["estudiante_bloque"] = b
+                else:
+                    resultado["cursos_pendientes"] = []
+                    resultado["cursos_pendientes_texto"] = ""
+                    resultado["creditos_electivos"] = 0.0
 
         except Exception as e:
             _log(f"Error procesando Excel IES: {e}")
@@ -1414,6 +1591,46 @@ class ExtractorDocumentoIES:
         re.IGNORECASE,
     )
 
+    PATRON_CREDITOS_ELECTIVOS = re.compile(
+        r"(?:total\s+de\s+)?cr[eé]ditos?\s+electivos?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_ELECTIVOS_2 = re.compile(
+        r"(\d+(?:[\.,]\d+)?)\s*cr[eé]ditos?\s+electivos?",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_ELECTIVOS_3 = re.compile(
+        r"electivos?\s+pendientes?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+
+    @classmethod
+    def extraer_creditos_electivos(cls, texto: str, tablas: list = None) -> float:
+        """Detecta y parsea créditos electivos pendientes en PDF (texto o tablas)."""
+        if tablas:
+            for t in tablas:
+                if not t or len(t) < 2:
+                    continue
+                for row in t:
+                    row_str = " ".join(str(c or "") for c in row).lower()
+                    if "electivo" in row_str and any(w in row_str for w in ["pendiente", "credito", "crédito", "resta", "falta"]):
+                        for celda in row:
+                            c_s = str(celda or "").strip()
+                            m = re.match(r"^(\d+(?:[\.,]\d+)?)$", c_s)
+                            if m:
+                                try:
+                                    return float(m.group(1).replace(",", "."))
+                                except Exception:
+                                    pass
+        for p in [cls.PATRON_CREDITOS_ELECTIVOS, cls.PATRON_CREDITOS_ELECTIVOS_2, cls.PATRON_CREDITOS_ELECTIVOS_3]:
+            m = p.search(texto)
+            if m:
+                try:
+                    return float(m.group(1).replace(",", "."))
+                except Exception:
+                    pass
+        return 0.0
+
     @classmethod
     def detectar_no_culminacion(cls, texto: str) -> tuple[bool, str]:
         """Detecta si el documento de la IES indica expresamente que el becario
@@ -1516,7 +1733,17 @@ class ExtractorDocumentoIES:
         return cursos
 
     @classmethod
-    def extraer(cls, ruta_pdf: str | Path, ies_esperada: str = "") -> dict:
+    def extraer(
+        cls,
+        ruta_pdf: str | Path,
+        ies_esperada: str = "",
+        dni_validado: str = "",
+        nombres_y_apellidos: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
+        log: LogCallback | None = None
+    ) -> dict:
+        _log = log or (lambda msg: None)
         ruta = Path(ruta_pdf)
         resultado = {
             "codigo_doc_ies": "",
@@ -1524,10 +1751,38 @@ class ExtractorDocumentoIES:
             "fecha_doc_ies_texto": "",
             "cursos_pendientes": [],
             "cursos_pendientes_texto": "",
+            "creditos_electivos": 0.0,
             "ies_validada": False,
             "alerta_no_culminacion": False,
             "motivo_no_culminacion": "",
+            "estudiante_bloque": None,
         }
+
+        # Si se proporcionan datos de identificación del estudiante, intentar buscar su bloque específico
+        if dni_validado or nombres_y_apellidos or expediente or expediente_padron:
+            bloques = cls.extraer_bloques_estudiantes(ruta, log=_log)
+            if bloques:
+                b = cls.buscar_estudiante(
+                    bloques,
+                    dni=dni_validado,
+                    nombres=nombres_y_apellidos,
+                    expediente=expediente,
+                    expediente_padron=expediente_padron,
+                    log=_log
+                )
+                if b:
+                    resultado["codigo_doc_ies"] = b.get("codigo_doc", "")
+                    resultado["fecha_doc_ies"] = b.get("fecha_doc", None)
+                    resultado["fecha_doc_ies_texto"] = b.get("fecha_doc_texto", "")
+                    resultado["cursos_pendientes"] = b.get("cursos", [])
+                    resultado["cursos_pendientes_texto"] = b.get("cursos_texto", "")
+                    resultado["creditos_electivos"] = float(b.get("creditos_electivos", 0.0) or 0.0)
+                    resultado["alerta_no_culminacion"] = b.get("alerta_no_culminacion", False)
+                    resultado["motivo_no_culminacion"] = b.get("motivo_no_culminacion", "")
+                    resultado["estudiante_bloque"] = b
+                    resultado["ies_validada"] = True
+                    resultado["raw_text"] = b.get("texto", "")
+                    return resultado
 
         with pdfplumber.open(ruta) as pdf:
             textos = []
@@ -1589,6 +1844,9 @@ class ExtractorDocumentoIES:
             resultado["cursos_pendientes_texto"] = "\n".join(
                 f"{i+1}. {c}" for i, c in enumerate(cursos)
             )
+
+        # Créditos electivos pendientes
+        resultado["creditos_electivos"] = cls.extraer_creditos_electivos(texto_completo, tablas)
 
         # Alerta de no culminación
         alerta, motivo = cls.detectar_no_culminacion(texto_completo)
@@ -1664,6 +1922,7 @@ class ExtractorDocumentoIES:
                             "fecha_doc_texto": f_doc_txt,
                             "cursos": cursos,
                             "cursos_texto": cursos_txt,
+                            "creditos_electivos": cls.extraer_creditos_electivos(txt, tbls),
                             "alerta_no_culminacion": alerta,
                             "motivo_no_culminacion": motivo,
                         })
@@ -1671,6 +1930,68 @@ class ExtractorDocumentoIES:
                 _log(f"Error leyendo PDF IES '{p_obj.name}': {e}")
                 
         return bloques
+
+    @classmethod
+    def buscar_estudiante(
+        cls,
+        bloques: list[dict],
+        dni: str = "",
+        nombres: str = "",
+        expediente: str = "",
+        expediente_padron: str = "",
+        log: LogCallback | None = None
+    ) -> dict | None:
+        """Busca a un becario en los bloques PDF de la IES y retorna el bloque completo."""
+        _log = log or (lambda msg: None)
+        dni_clean = re.sub(r"\D", "", str(dni or "")).strip()
+        exp_clean = re.sub(r"\D", "", str(expediente or "")).strip()
+        exp_pad_clean = re.sub(r"\D", "", str(expediente_padron or "")).strip()
+
+        # 1. Prioridad: Coincidencia por DNI
+        if dni_clean and len(dni_clean) in (7, 8):
+            for b in bloques:
+                if re.search(r'\b' + re.escape(dni_clean) + r'\b', b["texto"]):
+                    _log(f"  [IES PDF] Becario hallado por DNI ({dni_clean}) en {b['archivo']} pág. {b['pagina']}")
+                    return b
+
+        # 2. Coincidencia por Nombres y Apellidos
+        nombres_str = str(nombres or "").strip().upper()
+        if nombres_str:
+            repls = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N"}
+            for k, v in repls.items():
+                nombres_str = nombres_str.replace(k, v)
+            tokens = [t for t in re.sub(r"[^A-Z0-9]+", " ", nombres_str).split() if len(t) >= 3 and t not in ("DEL", "LOS", "LAS", "SAN")]
+
+            mejor_bloque = None
+            mejor_matches = 0
+            for b in bloques:
+                txt_norm = b["texto"].upper()
+                for k, v in repls.items():
+                    txt_norm = txt_norm.replace(k, v)
+                coincidencias = sum(1 for tok in tokens if tok in txt_norm)
+                if coincidencias > mejor_matches and coincidencias >= min(2, len(tokens)):
+                    mejor_matches = coincidencias
+                    mejor_bloque = b
+
+            if mejor_bloque:
+                _log(f"  [IES PDF] Becario hallado por Nombres ({mejor_matches}/{len(tokens)} tokens) en {mejor_bloque['archivo']} pág. {mejor_bloque['pagina']}")
+                return mejor_bloque
+
+        # 3. Coincidencia por Expediente
+        for exp_val in (exp_clean, exp_pad_clean):
+            if exp_val and len(exp_val) >= 4:
+                for b in bloques:
+                    if exp_val in b["texto"]:
+                        _log(f"  [IES PDF] Becario hallado por Expediente ({exp_val}) en {b['archivo']} pág. {b['pagina']}")
+                        return b
+
+        # 4. Fallback si hay un solo bloque disponible
+        if len(bloques) == 1:
+            b = bloques[0]
+            _log(f"  [IES PDF] Usando único bloque disponible en {b['archivo']}")
+            return b
+
+        return None
 
     @classmethod
     def buscar_cursos_estudiante(
@@ -1684,54 +2005,16 @@ class ExtractorDocumentoIES:
     ) -> tuple[list[str], str, str, str, bool, str]:
         """Busca y extrae los cursos y datos de la constancia del estudiante cruzando DNI, nombres y expediente.
         Retorna: (cursos_list, cursos_texto, codigo_doc_ies, fecha_doc_ies_texto, alerta_no_culminacion, motivo)"""
-        _log = log or (lambda msg: None)
-        dni_clean = re.sub(r"\D", "", str(dni or "")).strip()
-        exp_clean = re.sub(r"\D", "", str(expediente or "")).strip()
-        exp_pad_clean = re.sub(r"\D", "", str(expediente_padron or "")).strip()
-        
-        # 1. Prioridad: Coincidencia por DNI
-        if dni_clean and len(dni_clean) in (7, 8):
-            for b in bloques:
-                if re.search(r'\b' + re.escape(dni_clean) + r'\b', b["texto"]):
-                    _log(f"  [IES PDF] Becario hallado por DNI ({dni_clean}) en {b['archivo']} pág. {b['pagina']}")
-                    return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
-
-        # 2. Coincidencia por Nombres y Apellidos
-        nombres_str = str(nombres or "").strip().upper()
-        if nombres_str:
-            repls = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N"}
-            for k, v in repls.items():
-                nombres_str = nombres_str.replace(k, v)
-            tokens = [t for t in re.sub(r"[^A-Z0-9]+", " ", nombres_str).split() if len(t) >= 3 and t not in ("DEL", "LOS", "LAS", "SAN")]
-            
-            mejor_bloque = None
-            mejor_matches = 0
-            for b in bloques:
-                txt_norm = b["texto"].upper()
-                for k, v in repls.items():
-                    txt_norm = txt_norm.replace(k, v)
-                coincidencias = sum(1 for tok in tokens if tok in txt_norm)
-                if coincidencias > mejor_matches and coincidencias >= min(2, len(tokens)):
-                    mejor_matches = coincidencias
-                    mejor_bloque = b
-                    
-            if mejor_bloque:
-                _log(f"  [IES PDF] Becario hallado por Nombres ({mejor_matches}/{len(tokens)} tokens) en {mejor_bloque['archivo']} pág. {mejor_bloque['pagina']}")
-                return mejor_bloque["cursos"], mejor_bloque["cursos_texto"], mejor_bloque["codigo_doc"], mejor_bloque["fecha_doc_texto"], mejor_bloque["alerta_no_culminacion"], mejor_bloque["motivo_no_culminacion"]
-
-        # 3. Coincidencia por Expediente
-        for exp_val in (exp_clean, exp_pad_clean):
-            if exp_val and len(exp_val) >= 4:
-                for b in bloques:
-                    if exp_val in b["texto"]:
-                        _log(f"  [IES PDF] Becario hallado por Expediente ({exp_val}) en {b['archivo']} pág. {b['pagina']}")
-                        return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
-
-        # 4. Fallback si hay un solo bloque disponible
-        if len(bloques) == 1:
-            b = bloques[0]
-            _log(f"  [IES PDF] Usando único bloque disponible en {b['archivo']}")
-            return b["cursos"], b["cursos_texto"], b["codigo_doc"], b["fecha_doc_texto"], b["alerta_no_culminacion"], b["motivo_no_culminacion"]
+        b = cls.buscar_estudiante(
+            bloques,
+            dni=dni,
+            nombres=nombres,
+            expediente=expediente,
+            expediente_padron=expediente_padron,
+            log=log
+        )
+        if b:
+            return b.get("cursos", []), b.get("cursos_texto", ""), b.get("codigo_doc", ""), b.get("fecha_doc_texto", ""), b.get("alerta_no_culminacion", False), b.get("motivo_no_culminacion", "")
 
         return [], "", "", "", False, ""
 
@@ -2265,6 +2548,7 @@ class ProcesadorInformes:
         progreso: ProgressCallback | None = None,
         nro_informe: str = "",
         rutas_formatos: list = None,
+        tipo_formato_autogenerado: str = "individual",
     ) -> None:
         self.ruta_excel = Path(ruta_excel)
         self.ruta_formato_autogenerado = Path(ruta_formato_autogenerado)
@@ -2275,10 +2559,15 @@ class ProcesadorInformes:
         self._progreso = progreso or (lambda pct, msg: None)
         self.nro_informe = nro_informe
         self.rutas_formatos = [Path(r) for r in rutas_formatos] if rutas_formatos else []
+        self.tipo_formato_autogenerado = str(tipo_formato_autogenerado or "individual").lower()
         self.advertencias = []
+        self.alerta_electivos = ""
+        self.becarios_con_electivos = []
 
     def ejecutar(self) -> Path:
         self._validar_entradas()
+        self.alerta_electivos = ""
+        self.becarios_con_electivos = []
 
         ctx = {}
         ctx["NUMERO_INFORME_GENERAR"] = self.nro_informe
@@ -2454,18 +2743,39 @@ class ProcesadorInformes:
         self._log("Doc.5: Leyendo documento de la IES...")
         
         is_excel = str(self.ruta_documento_ies).lower().endswith((".xlsx", ".xls"))
+        exp_succor = ctx.get("NUMERO_SIGEDO", "")
+        exp_padron = ctx.get("EXPEDIENTE_BECARIO", "")
+        if not exp_padron and fila_becario:
+            exp_padron = str(datos_bd.get("nexpediente", "") or "")
+
         if is_excel:
             datos_ies = ExtractorDocumentoIESExcel.extraer(
                 self.ruta_documento_ies,
                 dni_validado=ctx.get("DNI_VALIDADO", ""),
                 nombres_y_apellidos=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
+                expediente=exp_succor,
+                expediente_padron=exp_padron,
                 log=self._log
             )
         else:
             datos_ies = ExtractorDocumentoIES.extraer(
                 self.ruta_documento_ies,
-                ies_esperada=ctx["INSTITUCION"],
+                ies_esperada=ctx.get("INSTITUCION", ""),
+                dni_validado=ctx.get("DNI_VALIDADO", ""),
+                nombres_y_apellidos=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
+                expediente=exp_succor,
+                expediente_padron=exp_padron,
+                log=self._log
             )
+
+        # Verificación y alerta de créditos electivos pendientes (Individual)
+        cred_elec = float(datos_ies.get("creditos_electivos", 0.0) or 0.0)
+        if cred_elec > 0:
+            nom_b = ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or (datos_ies.get("estudiante_bloque") or {}).get("nombre", "") or "del becario"
+            if nom_b and nom_b not in self.becarios_con_electivos:
+                self.becarios_con_electivos.append(nom_b)
+            self.alerta_electivos = f"se ha encontrado cursos electivos, revisar la informacion del becario {nom_b}"
+            self._log(f"  [ALERTA ELECTIVOS] {self.alerta_electivos}")
 
         ctx["CODIGO_DOC_IES"] = datos_ies.get("codigo_doc_ies", "(no detectado)")
         ctx["FECHA_DOC_IES_TEXTO"] = datos_ies.get("fecha_doc_ies_texto", "(no detectada)")
@@ -2583,6 +2893,8 @@ class ProcesadorInformes:
         )
         
         self._progreso(0.1, "Iniciando procesamiento múltiple...")
+        self.alerta_electivos = ""
+        self.becarios_con_electivos = []
         
         # 1. Calendario Académico (Compartido)
         self._log("Doc.1: Extrayendo Calendario Académico...")
@@ -2618,10 +2930,29 @@ class ProcesadorInformes:
         else:
             referencia_doc_ies_str = "Documento IES"
 
+        # 4. Formatos Autogenerados (Modo Individual o Múltiple Consolidado)
+        lista_datos_fmt = []
+        es_modo_consolidado = getattr(self, "tipo_formato_autogenerado", "individual") == "multiple" or (len(self.rutas_formatos) == 1 and str(self.rutas_formatos[0]).lower().endswith(".pdf"))
+        
+        if es_modo_consolidado and self.rutas_formatos:
+            self._log("Doc.4: Extrayendo Formatos Autogenerados desde PDF consolidado...")
+            lista_datos_fmt = ExtractorFormatoAutogenerado.extraer_bloques_formatos(self.rutas_formatos[0], log=self._log)
+            if not lista_datos_fmt:
+                self._log("  AVISO: No se detectaron múltiples bloques. Extrayendo como formato único.")
+                lista_datos_fmt = [ExtractorFormatoAutogenerado.extraer(self.rutas_formatos[0])]
+        else:
+            self._log(f"Doc.4: Extrayendo {len(self.rutas_formatos)} Formato(s) Autogenerado(s) individuales...")
+            for ruta_fmt in self.rutas_formatos:
+                lista_datos_fmt.append(ExtractorFormatoAutogenerado.extraer(ruta_fmt))
+
+        cant_becarios = len(lista_datos_fmt)
+        if cant_becarios < 2:
+            self._log(f"ADVERTENCIA: Se detectaron {cant_becarios} formato(s). El informe múltiple requiere al menos 2 becarios.")
+
         nombre_inf_succor = ExtractorInformeSuccor.limpiar_nombre_succor(datos_succor.get("nombre_informe_succor", ""))
         num_sigedo_succor = normalizar_sigedo_con_anio(datos_succor.get("numero_sigedo", ""))
         super_contexto = {
-            "CANTIDAD_BECARIOS": len(self.rutas_formatos),
+            "CANTIDAD_BECARIOS": cant_becarios,
             "FECHA_ACTUAL_TEXTO": fecha_a_texto(date.today()),
             "NUMERO_SIGEDO_GLOBAL": num_sigedo_succor,
             "BECA_TITULO_GLOBAL": "",
@@ -2642,11 +2973,10 @@ class ProcesadorInformes:
         gen_excel = GeneradorExcel()
         gen_oficio = GeneradorOficio()
         
-        # Iterar por cada formato autogenerado cargado
+        # Iterar por cada formato autogenerado extraído
         fechas_solicitud_todas = []
-        for idx, ruta_fmt in enumerate(self.rutas_formatos):
+        for idx, datos_fmt in enumerate(lista_datos_fmt):
             self._log(f"--- Procesando Becario {idx+1} ---")
-            datos_fmt = ExtractorFormatoAutogenerado.extraer(ruta_fmt)
             expediente = datos_fmt.get("numero_expediente", "")
             f_sol_obj = datos_fmt.get("fecha_solicitud")
             if f_sol_obj:
@@ -2762,7 +3092,7 @@ class ProcesadorInformes:
             alerta_no_culmina = False
 
             if is_excel and bloques_ies:
-                cursos_bec, cursos_txt = ExtractorDocumentoIESExcel.buscar_cursos_estudiante(
+                estudiante_ies = ExtractorDocumentoIESExcel.buscar_estudiante(
                     bloques_ies,
                     dni=ctx.get("DNI_VALIDADO", ""),
                     nombres=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
@@ -2770,8 +3100,16 @@ class ProcesadorInformes:
                     expediente_padron=exp_final,
                     log=self._log
                 )
+                if estudiante_ies:
+                    cursos_bec = estudiante_ies.get("cursos", [])
+                    cursos_txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(cursos_bec))
+                    cred_elec = estudiante_ies.get("creditos_electivos", 0.0)
+                    if cred_elec > 0:
+                        nom_b = ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or estudiante_ies.get("nombre", "")
+                        if nom_b and nom_b not in self.becarios_con_electivos:
+                            self.becarios_con_electivos.append(nom_b)
             elif not is_excel and bloques_ies:
-                cursos_bec, cursos_txt, cod_doc_bec, f_doc_txt_bec, alerta_no_culmina, mot = ExtractorDocumentoIES.buscar_cursos_estudiante(
+                estudiante_ies = ExtractorDocumentoIES.buscar_estudiante(
                     bloques_ies,
                     dni=ctx.get("DNI_VALIDADO", ""),
                     nombres=ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", ""),
@@ -2779,6 +3117,18 @@ class ProcesadorInformes:
                     expediente_padron=exp_final,
                     log=self._log
                 )
+                if estudiante_ies:
+                    cursos_bec = estudiante_ies.get("cursos", [])
+                    cursos_txt = estudiante_ies.get("cursos_texto", "")
+                    cod_doc_bec = estudiante_ies.get("codigo_doc", "")
+                    f_doc_txt_bec = estudiante_ies.get("fecha_doc_texto", "")
+                    alerta_no_culmina = estudiante_ies.get("alerta_no_culminacion", False)
+                    mot = estudiante_ies.get("motivo_no_culminacion", "")
+                    cred_elec = float(estudiante_ies.get("creditos_electivos", 0.0) or 0.0)
+                    if cred_elec > 0:
+                        nom_b = ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or estudiante_ies.get("nombre", "")
+                        if nom_b and nom_b not in self.becarios_con_electivos:
+                            self.becarios_con_electivos.append(nom_b)
                 if cod_doc_bec:
                     ctx["CODIGO_DOC_IES"] = cod_doc_bec
                 if f_doc_txt_bec:
@@ -2826,6 +3176,12 @@ class ProcesadorInformes:
                 rutas_salida.append(ruta_of)
             except Exception as e:
                 self._log(f"Error generando oficio {idx+1}: {e}")
+
+        # Consolidar alerta de cursos electivos pendientes encontrados
+        if self.becarios_con_electivos:
+            nombres_str = ", ".join(self.becarios_con_electivos)
+            self.alerta_electivos = f"se ha encontrado cursos electivos, revisar la informacion del becario {nombres_str}"
+            self._log(f"  [ALERTA ELECTIVOS] {self.alerta_electivos}")
 
         # Recopilar todos los códigos de documentos IES identificados para numeral 2.6
         codigos_ies_identificados = []

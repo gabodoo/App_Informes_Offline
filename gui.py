@@ -19,8 +19,8 @@ class AppInformes(ctk.CTk):
     """Ventana principal de la aplicacion."""
 
     APP_TITLE = "Sigedo Lima"
-    APP_SIZE = "1000x800"
-    MIN_SIZE = (900, 700)
+    APP_SIZE = "1000x750"
+    MIN_SIZE = (900, 600)
 
     # Colores Sigedo
     COLOR_AZUL_OSCURO = "#004b87"
@@ -55,6 +55,8 @@ class AppInformes(ctk.CTk):
         self._nro_informe_mult = tk.StringVar()
         self._ruta_excel_mult = tk.StringVar()
         self._formatos_autogenerados_mult = [] # Lista de StringVars
+        self._tipo_carga_formatos_mult = tk.StringVar(value="Individual")
+        self._ruta_formato_consolidado_mult = tk.StringVar()
         self._ruta_informe_succor_mult = tk.StringVar()
         self._ruta_calendario_academico_mult = tk.StringVar()
         self._ruta_documento_ies_mult = tk.StringVar()
@@ -165,7 +167,7 @@ class AppInformes(ctk.CTk):
 
         # --- Contenedor de Vistas ---
         self.main_container = ctk.CTkFrame(self, fg_color=self.COLOR_FONDO_BLANCO)
-        self.main_container.grid(row=2, column=1, sticky="nsew", padx=20, pady=20)
+        self.main_container.grid(row=2, column=1, sticky="nsew", padx=15, pady=(10, 15))
         self.main_container.grid_columnconfigure(0, weight=1)
         self.main_container.grid_rowconfigure(0, weight=1)
 
@@ -186,18 +188,18 @@ class AppInformes(ctk.CTk):
 
         # --- Progreso y Log (Común) ---
         status_frame = ctk.CTkFrame(self.main_container, fg_color=self.COLOR_FONDO_BLANCO)
-        status_frame.grid(row=1, column=0, sticky="nsew", pady=(20, 0))
+        status_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         status_frame.grid_columnconfigure(0, weight=1)
         status_frame.grid_rowconfigure(2, weight=1)
 
         self._lbl_estado = ctk.CTkLabel(status_frame, text="Módulo: Actualización", font=ctk.CTkFont(size=12), text_color=self.COLOR_TEXTO_OSCURO, anchor="w")
-        self._lbl_estado.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        self._lbl_estado.grid(row=0, column=0, sticky="ew", pady=(0, 4))
 
         self._barra_progreso = ctk.CTkProgressBar(status_frame, progress_color=self.COLOR_AZUL_CLARO, height=8)
-        self._barra_progreso.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        self._barra_progreso.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         self._barra_progreso.set(0)
 
-        self._log_text = ctk.CTkTextbox(status_frame, font=ctk.CTkFont(family="Consolas", size=12), border_width=1, border_color=self.COLOR_BORDE, fg_color="#fafafa", text_color="#333", corner_radius=0, state="disabled")
+        self._log_text = ctk.CTkTextbox(status_frame, height=130, font=ctk.CTkFont(family="Consolas", size=12), border_width=1, border_color=self.COLOR_BORDE, fg_color="#fafafa", text_color="#333", corner_radius=0, state="disabled")
         self._log_text.grid(row=2, column=0, sticky="nsew")
 
         self._cambiar_modo("actualizacion")
@@ -269,20 +271,21 @@ class AppInformes(ctk.CTk):
     def _construir_vista_individual(self, parent) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
         frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
         
-        form_frame = ctk.CTkFrame(frame, fg_color=self.COLOR_FONDO_BLANCO, border_width=1, border_color=self.COLOR_BORDE, corner_radius=0)
-        form_frame.grid(row=0, column=0, sticky="ew")
-        form_frame.grid_columnconfigure(1, weight=1)
+        scrollable_frame = ctk.CTkScrollableFrame(frame, fg_color=self.COLOR_FONDO_BLANCO, border_width=1, border_color=self.COLOR_BORDE, corner_radius=0)
+        scrollable_frame.grid(row=0, column=0, sticky="nsew")
+        scrollable_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(form_frame, text="Nro. Informe", font=ctk.CTkFont(size=13, weight="bold"), text_color=self.COLOR_TEXTO_OSCURO).grid(row=0, column=0, padx=15, pady=(20, 10), sticky="w")
-        nro_entry = ctk.CTkEntry(form_frame, textvariable=self._nro_informe, placeholder_text="Ej: 6348", height=34, border_color=self.COLOR_BORDE, corner_radius=2, fg_color="#fcfcfc")
-        nro_entry.grid(row=0, column=1, sticky="w", padx=(0, 15), pady=(20, 10))
+        ctk.CTkLabel(scrollable_frame, text="Nro. Informe", font=ctk.CTkFont(size=13, weight="bold"), text_color=self.COLOR_TEXTO_OSCURO).grid(row=0, column=0, padx=15, pady=(15, 8), sticky="w")
+        nro_entry = ctk.CTkEntry(scrollable_frame, textvariable=self._nro_informe, placeholder_text="Ej: 6348", height=34, border_color=self.COLOR_BORDE, corner_radius=2, fg_color="#fcfcfc")
+        nro_entry.grid(row=0, column=1, sticky="w", padx=(0, 15), pady=(15, 8))
 
-        self._crear_fila_seleccion(form_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel, comando=lambda: self._seleccionar_archivo(self._ruta_excel, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
-        self._crear_fila_seleccion(form_frame, fila=2, etiqueta="Formato autogenerado (.pdf)", variable=self._ruta_formato_autogenerado, comando=lambda: self._seleccionar_archivo(self._ruta_formato_autogenerado, "Formato autogenerado", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="PDF con fecha/hora de ingreso...")
-        self._crear_fila_seleccion(form_frame, fila=3, etiqueta="Informe SUCCOR (.pdf)", variable=self._ruta_informe_succor, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR del becario...")
-        self._crear_fila_seleccion(form_frame, fila=4, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
-        self._crear_fila_seleccion(form_frame, fila=5, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies, comando=lambda: self._seleccionar_archivo(self._ruta_documento_ies, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta emitida por la IES...")
+        self._crear_fila_seleccion(scrollable_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel, comando=lambda: self._seleccionar_archivo(self._ruta_excel, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
+        self._crear_fila_seleccion(scrollable_frame, fila=2, etiqueta="Formato autogenerado (.pdf)", variable=self._ruta_formato_autogenerado, comando=lambda: self._seleccionar_archivo(self._ruta_formato_autogenerado, "Formato autogenerado", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="PDF con fecha/hora de ingreso...")
+        self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Informe SUCCOR (.pdf)", variable=self._ruta_informe_succor, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR del becario...")
+        self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
+        self._crear_fila_seleccion(scrollable_frame, fila=5, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies, comando=lambda: self._seleccionar_archivo(self._ruta_documento_ies, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("PDF", "*.pdf"), ("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta emitida por la IES (.pdf o .xlsx)...")
         
         return frame
 
@@ -303,27 +306,121 @@ class AppInformes(ctk.CTk):
 
         self._crear_fila_seleccion(scrollable_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel_mult, comando=lambda: self._seleccionar_archivo(self._ruta_excel_mult, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
         self._crear_fila_seleccion(scrollable_frame, fila=2, etiqueta="Informe SUCCOR Compartido (.pdf)", variable=self._ruta_informe_succor_mult, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor_mult, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR (Múltiples becarios)...")
+        self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico_mult, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico_mult, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
         self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies_mult, comando=lambda: self._seleccionar_archivos(self._ruta_documento_ies_mult, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("PDF", "*.pdf"), ("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta de la IES (uno o varios PDFs, o Excel)...")
         
         # Sección dinámica para Formatos Autogenerados
         separator = ctk.CTkFrame(scrollable_frame, height=2, fg_color=self.COLOR_BORDE)
         separator.grid(row=5, column=0, columnspan=2, sticky="ew", padx=15, pady=20)
 
-        lbl_formatos = ctk.CTkLabel(scrollable_frame, text="Formatos Autogenerados (1 por becario)", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_AZUL_OSCURO)
-        lbl_formatos.grid(row=6, column=0, columnspan=2, padx=15, pady=(0, 10), sticky="w")
+        lbl_formatos = ctk.CTkLabel(scrollable_frame, text="Formatos Autogenerados", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_AZUL_OSCURO)
+        lbl_formatos.grid(row=6, column=0, columnspan=2, padx=15, pady=(0, 8), sticky="w")
 
-        self.frame_formatos_dinamico = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        self.frame_formatos_dinamico.grid(row=7, column=0, columnspan=2, sticky="ew")
+        # Menú desplegable para elegir tipo de formato: Individual o Múltiple
+        fila_opcion_formato = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        fila_opcion_formato.grid(row=7, column=0, columnspan=2, padx=15, pady=(0, 10), sticky="ew")
+        fila_opcion_formato.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            fila_opcion_formato,
+            text="Tipo de formato:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=self.COLOR_TEXTO_OSCURO
+        ).grid(row=0, column=0, padx=(0, 15), sticky="w")
+
+        self.om_tipo_formatos = ctk.CTkOptionMenu(
+            fila_opcion_formato,
+            values=["Individual", "Múltiple"],
+            variable=self._tipo_carga_formatos_mult,
+            command=self._on_tipo_carga_formatos_cambiado,
+            height=34,
+            width=180,
+            fg_color=self.COLOR_AZUL_CLARO,
+            button_color=self.COLOR_AZUL_OSCURO,
+            button_hover_color="#1d4ed8",
+            dropdown_fg_color="#ffffff",
+            dropdown_text_color=self.COLOR_TEXTO_OSCURO,
+            dropdown_hover_color="#f3f4f6",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            corner_radius=4,
+        )
+        self.om_tipo_formatos.grid(row=0, column=1, sticky="w")
+
+        self.lbl_formatos_ayuda = ctk.CTkLabel(
+            fila_opcion_formato,
+            text="ℹ️ Modo Individual: Cargue los formatos autogenerados (.pdf) de cada becario uno por uno.",
+            font=ctk.CTkFont(size=11, slant="italic"),
+            text_color="#4b5563"
+        )
+        self.lbl_formatos_ayuda.grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+        # Contenedor A: Formatos Individuales (uno por uno)
+        self.frame_formatos_individual = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        self.frame_formatos_individual.grid(row=8, column=0, columnspan=2, sticky="ew")
+        self.frame_formatos_individual.grid_columnconfigure(0, weight=1)
+
+        self.frame_formatos_dinamico = ctk.CTkFrame(self.frame_formatos_individual, fg_color="transparent")
+        self.frame_formatos_dinamico.grid(row=0, column=0, sticky="ew")
         self.frame_formatos_dinamico.grid_columnconfigure(1, weight=1)
 
-        btn_add_formato = ctk.CTkButton(scrollable_frame, text="+ Añadir Formato", width=120, fg_color=self.COLOR_VERDE, hover_color="#219150", command=self._add_formato_autogenerado)
-        btn_add_formato.grid(row=8, column=0, padx=15, pady=10, sticky="w")
+        self.btn_add_formato = ctk.CTkButton(
+            self.frame_formatos_individual,
+            text="+ Añadir Formato",
+            width=120,
+            fg_color=self.COLOR_VERDE,
+            hover_color="#219150",
+            command=self._add_formato_autogenerado
+        )
+        self.btn_add_formato.grid(row=1, column=0, padx=15, pady=10, sticky="w")
 
         # Iniciar con 2 formatos por defecto ya que es "Múltiple"
         self._add_formato_autogenerado()
         self._add_formato_autogenerado()
 
+        # Contenedor B: Formato Consolidado (un solo PDF con 2 a 5 becarios)
+        self.frame_formatos_consolidado = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        self.frame_formatos_consolidado.grid_columnconfigure(1, weight=1)
+
+        self._crear_fila_seleccion(
+            self.frame_formatos_consolidado,
+            fila=0,
+            etiqueta="PDF consolidado (2 a 5 becarios):",
+            variable=self._ruta_formato_consolidado_mult,
+            comando=lambda: self._seleccionar_archivo(
+                self._ruta_formato_consolidado_mult,
+                "Formato Autogenerado Consolidado",
+                [("PDF", "*.pdf"), ("Todos", "*.*")]
+            ),
+            placeholder="Archivo PDF único que une los formatos autogenerados de todos los becarios..."
+        )
+        lbl_info_cons = ctk.CTkLabel(
+            self.frame_formatos_consolidado,
+            text="El sistema reconocerá automáticamente la información de cada becario (1 por 1) sin confundirlos.",
+            font=ctk.CTkFont(size=11),
+            text_color="#4b5563"
+        )
+        lbl_info_cons.grid(row=1, column=1, sticky="w", padx=(0, 15), pady=(2, 10))
+
+        # Por defecto, ocultar el contenedor consolidado (modo individual activo)
+        self.frame_formatos_consolidado.grid_remove()
+
         return frame
+
+    def _on_tipo_carga_formatos_cambiado(self, seleccion: str) -> None:
+        if seleccion == "Múltiple":
+            self.frame_formatos_individual.grid_remove()
+            self.frame_formatos_consolidado.grid(row=8, column=0, columnspan=2, sticky="ew")
+            self.lbl_formatos_ayuda.configure(
+                text="ℹ️ Modo Múltiple: Cargue un archivo PDF consolidado donde se junte la información de 2 a 5 becarios."
+            )
+            self._log("Modalidad seleccionada: Formatos Autogenerados Múltiples (PDF consolidado)")
+        else:
+            self.frame_formatos_consolidado.grid_remove()
+            self.frame_formatos_individual.grid(row=8, column=0, columnspan=2, sticky="ew")
+            self.lbl_formatos_ayuda.configure(
+                text="ℹ️ Modo Individual: Cargue los formatos autogenerados (.pdf) de cada becario uno por uno."
+            )
+            self._log("Modalidad seleccionada: Formatos Autogenerados Individuales (1 por 1)")
 
     def _add_formato_autogenerado(self):
         if len(self._formatos_autogenerados_mult) >= 5:
@@ -372,13 +469,13 @@ class AppInformes(ctk.CTk):
             text=etiqueta,
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=self.COLOR_TEXTO_OSCURO
-        ).grid(row=fila, column=0, padx=15, pady=10, sticky="w")
+        ).grid(row=fila, column=0, padx=15, pady=8, sticky="w")
 
         fila_controles = ctk.CTkFrame(parent, fg_color="transparent")
         fila_controles.grid(
             row=fila, column=1,
             padx=(0, 15),
-            pady=10,
+            pady=8,
             sticky="ew",
         )
         fila_controles.grid_columnconfigure(0, weight=1)
@@ -451,6 +548,7 @@ class AppInformes(ctk.CTk):
             self._nro_informe_mult.set("")
             for var in self._formatos_autogenerados_mult:
                 var.set("")
+            self._ruta_formato_consolidado_mult.set("")
             self._ruta_informe_succor_mult.set("")
             self._ruta_calendario_academico_mult.set("")
             self._ruta_documento_ies_mult.set("")
@@ -517,10 +615,16 @@ class AppInformes(ctk.CTk):
                     messagebox.showwarning("Datos incompletos", f"Cargue el archivo: {nombre}")
                     return False
             
-            formatos_llenos = [v for v in self._formatos_autogenerados_mult if v.get().strip()]
-            if len(formatos_llenos) < 2:
-                messagebox.showwarning("Datos incompletos", "Debe cargar al menos 2 Formatos Autogenerados para generar un Informe Múltiple.")
-                return False
+            tipo_fmt = self._tipo_carga_formatos_mult.get()
+            if tipo_fmt == "Múltiple":
+                if not self._ruta_formato_consolidado_mult.get().strip():
+                    messagebox.showwarning("Datos incompletos", "Cargue el archivo: Formato autogenerado consolidado (.pdf)")
+                    return False
+            else:
+                formatos_llenos = [v for v in self._formatos_autogenerados_mult if v.get().strip()]
+                if len(formatos_llenos) < 2:
+                    messagebox.showwarning("Datos incompletos", "Debe cargar al menos 2 Formatos Autogenerados para generar un Informe Múltiple.")
+                    return False
 
         from generador_word import PLANTILLA_PATH
         if not PLANTILLA_PATH.exists():
@@ -568,9 +672,17 @@ class AppInformes(ctk.CTk):
                     progreso=self._actualizar_progreso,
                     nro_informe=self._nro_informe.get().strip()
                 )
-                rutas_generadas = procesador.ejecutar()
+                res = procesador.ejecutar()
+                rutas_generadas = [res] if isinstance(res, Path) else (list(res) if res else [])
             else:
-                formatos = [v.get() for v in self._formatos_autogenerados_mult if v.get().strip()]
+                tipo_fmt = self._tipo_carga_formatos_mult.get()
+                if tipo_fmt == "Múltiple":
+                    formatos = [self._ruta_formato_consolidado_mult.get().strip()]
+                    tipo_param = "multiple"
+                else:
+                    formatos = [v.get() for v in self._formatos_autogenerados_mult if v.get().strip()]
+                    tipo_param = "individual"
+
                 procesador = ProcesadorInformes(
                     ruta_excel=self._ruta_excel_mult.get(),
                     ruta_formato_autogenerado=formatos[0],
@@ -580,19 +692,14 @@ class AppInformes(ctk.CTk):
                     log=self._log,
                     progreso=self._actualizar_progreso,
                     nro_informe=self._nro_informe_mult.get().strip(),
-                    rutas_formatos=formatos
+                    rutas_formatos=formatos,
+                    tipo_formato_autogenerado=tipo_param
                 )
-                rutas_generadas = procesador.ejecutar_multiple()
+                res = procesador.ejecutar_multiple()
+                rutas_generadas = list(res) if res else []
                 
-            rutas_str = "\n".join(str(r.name) for r in rutas_generadas) if rutas_generadas else "(Sin archivos)"
-            
-            # Mostrar ventana emergente de advertencia al concluir si hay alertas (Individual y Múltiple)
-            if hasattr(procesador, 'advertencias') and procesador.advertencias:
-                adv_text = "\n\n".join(procesador.advertencias)
-                self.after(
-                    0,
-                    lambda m=adv_text: messagebox.showwarning("Atención", m)
-                )
+            alerta_elec = getattr(procesador, 'alerta_electivos', '')
+            advertencias_list = getattr(procesador, 'advertencias', [])
 
             salida_dir = None
             if rutas_generadas:
@@ -604,20 +711,34 @@ class AppInformes(ctk.CTk):
                 except Exception:
                     salida_dir = Path('Informes_Generados').resolve()
 
-            self.after(
-                0,
-                lambda: messagebox.showinfo(
+            rutas_str = "\n".join(str(r.name) for r in rutas_generadas) if rutas_generadas else "(Sin archivos)"
+
+            def _notificar_finalizacion():
+                # 1. Aviso emergente de cursos electivos pendientes (Individual y Múltiple)
+                if alerta_elec:
+                    messagebox.showwarning("Aviso", alerta_elec)
+
+                # 2. Ventana emergente de advertencia al concluir si hay alertas adicionales
+                if advertencias_list:
+                    adv_text = "\n\n".join(advertencias_list)
+                    messagebox.showwarning("Atención", adv_text)
+
+                # 3. Notificación de informe(s) completado(s)
+                messagebox.showinfo(
                     'Completado',
                     f'Operación finalizada.\n\nCarpeta de salida:\n{salida_dir}\n\nArchivos:\n{rutas_str}',
-                ),
-            )
-            self.after(0, lambda: self._btn_nuevo.configure(state='normal'))
-            if salida_dir and salida_dir.exists():
-                try:
-                    import os
-                    os.startfile(str(salida_dir))
-                except Exception:
-                    pass
+                )
+                self._btn_nuevo.configure(state='normal')
+
+                # 4. Abrir carpeta de salida en el explorador
+                if salida_dir and salida_dir.exists():
+                    try:
+                        import os
+                        os.startfile(str(salida_dir))
+                    except Exception:
+                        pass
+
+            self.after(0, _notificar_finalizacion)
         except (BecarioNoEncontradoIESException, FechaFinInsuficienteException, BecarioNoCulminariaAmpliacionException) as e:
             self._log(f"ADVERTENCIA: {e}")
             msg = str(e)

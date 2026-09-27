@@ -12,6 +12,8 @@ if exist "%DIR_PROYECTO%venv\Scripts\python.exe" (
     set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python313\python.exe"
 ) else if exist "%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python312\python.exe" (
     set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\Programs\Python\Python312\python.exe"
+) else if exist "%HOMEDRIVE%%HOMEPATH%\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" (
+    set "PYTHON=%HOMEDRIVE%%HOMEPATH%\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
 ) else (
     set "PYTHON=python"
 )

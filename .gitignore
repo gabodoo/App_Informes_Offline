@@ -26,3 +26,6 @@ Informes_Generados_Backup/
 
 # Excepciones
 !plantillas/*.docx
+!plantillas/*.xlsx
+!plantillas/*.xls
+!plantillas/*.bak
