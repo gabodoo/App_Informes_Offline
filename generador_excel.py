@@ -42,9 +42,18 @@ class GeneradorExcel:
         dni = contexto.get("DNI_VALIDADO", "")
         n_bec = str(contexto.get("NOMBRES_BECARIO", "")).strip()
         a_bec = str(contexto.get("APELLIDOS_BECARIO", "")).strip()
-        nombres = f"{n_bec} {a_bec}".strip()
-        if not nombres:
-            nombres = str(contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
+        if n_bec and a_bec:
+            nombres = f"{n_bec} {a_bec}".strip().upper()
+        else:
+            raw_nom = str(contexto.get("NOMBRE_PRIMERO_NOMBRES") or contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).strip().upper()
+            if "," in raw_nom:
+                partes = [p.strip() for p in raw_nom.split(",", 1)]
+                nombres = f"{partes[1]} {partes[0]}".strip().upper()
+            else:
+                nombres = raw_nom
+        if "," in nombres:
+            partes = [p.strip() for p in nombres.split(",", 1)]
+            nombres = f"{partes[1]} {partes[0]}".strip().upper()
         correo = contexto.get("CORREO_ELECTRONICO", "")
         informe_generado = f"INFORME Nº {contexto.get('NUMERO_INFORME_GENERAR', '')}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
 
@@ -318,9 +327,18 @@ class GeneradorExcel:
             dni = str(becario.get("DNI_VALIDADO", "")).strip()
             n_bec = str(becario.get("NOMBRES_BECARIO", "")).strip()
             a_bec = str(becario.get("APELLIDOS_BECARIO", "")).strip()
-            nombres = f"{n_bec} {a_bec}".strip()
-            if not nombres:
-                nombres = str(becario.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
+            if n_bec and a_bec:
+                nombres = f"{n_bec} {a_bec}".strip().upper()
+            else:
+                raw_nom = str(becario.get("NOMBRE_PRIMERO_NOMBRES") or becario.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).strip().upper()
+                if "," in raw_nom:
+                    partes = [p.strip() for p in raw_nom.split(",", 1)]
+                    nombres = f"{partes[1]} {partes[0]}".strip().upper()
+                else:
+                    nombres = raw_nom
+            if "," in nombres:
+                partes = [p.strip() for p in nombres.split(",", 1)]
+                nombres = f"{partes[1]} {partes[0]}".strip().upper()
             correo = str(becario.get("CORREO_ELECTRONICO", "")).strip()
             tel = str(becario.get("TELEFONO_CONTACTO", "")).strip() or "-"
 

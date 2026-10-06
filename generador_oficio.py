@@ -39,9 +39,21 @@ class GeneradorOficio:
         reemplazo_sigedo = sigedo_completo if sigedo_completo else sigedo_corto
         n_bec = str(contexto.get("NOMBRES_BECARIO", "")).strip()
         a_bec = str(contexto.get("APELLIDOS_BECARIO", "")).strip()
-        reemplazo_nombres = f"{n_bec} {a_bec}".strip()
-        if not reemplazo_nombres:
-            reemplazo_nombres = str(contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
+        if n_bec and a_bec:
+            reemplazo_nombres = f"{n_bec} {a_bec}".strip().upper()
+        else:
+            raw_nom = str(contexto.get("NOMBRE_PRIMERO_NOMBRES") or contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or "").strip().upper()
+            if "," in raw_nom:
+                partes = [p.strip() for p in raw_nom.split(",", 1)]
+                reemplazo_nombres = f"{partes[1]} {partes[0]}".strip().upper()
+            else:
+                reemplazo_nombres = raw_nom
+
+        # Asegurar que nunca quede una coma o formato 'APELLIDOS, NOMBRES'
+        if "," in reemplazo_nombres:
+            partes = [p.strip() for p in reemplazo_nombres.split(",", 1)]
+            reemplazo_nombres = f"{partes[1]} {partes[0]}".strip().upper()
+
         reemplazo_informe = f"Informe N° {contexto.get('NUMERO_INFORME_GENERAR', '')}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
         reemplazo_fecha = f"Escrito de fecha {contexto.get('FECHA_SOLICITUD_TEXTO', '')}"
         trato = str(contexto.get("TRATO_GENERO", "Señorita"))

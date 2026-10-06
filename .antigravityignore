@@ -1,0 +1,10 @@
+*.xlsx
+*.xls
+*.pdf
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+Informes_Generados/
+Pruebas/
+datos_sensibles/
