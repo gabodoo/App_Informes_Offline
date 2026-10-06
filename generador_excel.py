@@ -58,11 +58,15 @@ class GeneradorExcel:
         informe_generado = f"INFORME Nº {contexto.get('NUMERO_INFORME_GENERAR', '')}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
 
         if es_casilla:
-            ws["B3"].value = dni
+            dni_str = str(dni).strip()
+            ws["B3"].value = int(dni_str) if dni_str.isdigit() else dni_str
             ws["C3"].value = nombres
-            ws["D3"].value = contexto.get("EXPEDIENTE_BECARIO", "")
+            exp_b = str(contexto.get("EXPEDIENTE_PADRON") or contexto.get("EXPEDIENTE_BECARIO") or contexto.get("EXPEDIENTE") or "").strip()
+            exp_b = re.sub(r"\.0+$", "", exp_b).strip()
+            ws["D3"].value = int(exp_b) if exp_b.isdigit() else exp_b
             ws["E3"].value = contexto.get("NUMERO_SIGEDO", "")
-            ws["K3"].value = contexto.get("TELEFONO_CONTACTO", "")
+            tel_str = str(contexto.get("TELEFONO_CONTACTO", "")).strip()
+            ws["K3"].value = int(tel_str) if tel_str.isdigit() else tel_str
             
             import re
             texto_doc = str(ws["H3"].value or "")
@@ -220,8 +224,9 @@ class GeneradorExcel:
             if not nombres:
                 nombres = str(becario.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).upper()
 
-            exp_bec = becario.get("EXPEDIENTE_BECARIO") or becario.get("EXPEDIENTE") or becario.get("NUMERO_EXPEDIENTE", "")
-            exp_bec_val = int(exp_bec) if str(exp_bec).isdigit() else exp_bec
+            exp_bec = becario.get("EXPEDIENTE_PADRON") or becario.get("EXPEDIENTE_BECARIO") or becario.get("EXPEDIENTE") or becario.get("NUMERO_EXPEDIENTE", "")
+            exp_bec_str = re.sub(r"\.0+$", "", str(exp_bec or "")).strip()
+            exp_bec_val = int(exp_bec_str) if exp_bec_str.isdigit() else exp_bec_str
 
             sigedo_val = super_contexto.get("NUMERO_SIGEDO_GLOBAL") or becario.get("NUMERO_SIGEDO", "")
 

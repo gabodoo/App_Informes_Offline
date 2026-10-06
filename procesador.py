@@ -220,6 +220,100 @@ def construir_tabla_ciclos(fecha_inicio: date, fecha_fin: date) -> list[dict]:
     return filas
 
 
+def extraer_fecha_solicitud_de_texto(texto_completo: str) -> date | None:
+    """Extrae con alta precisión la fecha de solicitud/ingreso a mesa de partes
+    a partir del texto de un formato autogenerado."""
+    if not texto_completo:
+        return None
+
+    def _val(d, m, y):
+        try:
+            return date(int(y), int(m), int(d))
+        except (ValueError, TypeError):
+            return None
+
+    PALABRAS_CLAVE = (
+        "mesa de partes", "ingreso", "recepcion", "recepción",
+        "envio", "envío", "presentacion", "presentación",
+        "registro", "solicitud", "fecha y hora", "fecha",
+    )
+
+    # 1. Buscar línea por línea priorizando aquellas que contienen palabras clave
+    lineas = texto_completo.splitlines()
+    for linea in lineas:
+        l_low = linea.lower()
+        if any(p in l_low for p in PALABRAS_CLAVE):
+            # Formato con hora: dd/mm/yyyy hh:mm(:ss)
+            m_dt = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})[\s,T\-]+(\d{1,2}):(\d{2})', linea)
+            if m_dt:
+                d = _val(m_dt.group(1), m_dt.group(2), m_dt.group(3))
+                if d and d.year >= 2024:
+                    return d
+            # Formato en texto: dd de mes de(l) yyyy
+            m_txt = re.search(r'\b(\d{1,2})\s+de\s+([a-zA-ZáéíóúÁÉÍÓÚ]+)\s+de(?:l)?\s+(\d{4})\b', linea, re.I)
+            if m_txt:
+                d = texto_a_fecha(m_txt.group(0))
+                if d and d.year >= 2024:
+                    return d
+            # Formato numérico directo: dd/mm/yyyy o dd-mm-yyyy
+            m_num = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b', linea)
+            if m_num:
+                d = _val(m_num.group(1), m_num.group(2), m_num.group(3))
+                if d and d.year >= 2024:
+                    return d
+
+    # 2. Búsqueda en zona cercana a las palabras clave
+    texto_lower = texto_completo.lower()
+    mejor_pos = None
+    for palabra in PALABRAS_CLAVE:
+        pos = texto_lower.find(palabra)
+        if pos != -1:
+            if mejor_pos is None or pos < mejor_pos:
+                mejor_pos = pos
+
+    if mejor_pos is not None:
+        zona = texto_completo[max(0, mejor_pos - 100): min(len(texto_completo), mejor_pos + 400)]
+        m_dt = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})[\s,T\-]+(\d{1,2}):(\d{2})', zona)
+        if m_dt:
+            d = _val(m_dt.group(1), m_dt.group(2), m_dt.group(3))
+            if d and d.year >= 2024:
+                return d
+        m_txt = re.search(r'\b(\d{1,2})\s+de\s+([a-zA-ZáéíóúÁÉÍÓÚ]+)\s+de(?:l)?\s+(\d{4})\b', zona, re.I)
+        if m_txt:
+            d = texto_a_fecha(m_txt.group(0))
+            if d and d.year >= 2024:
+                return d
+        m_num = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b', zona)
+        if m_num:
+            d = _val(m_num.group(1), m_num.group(2), m_num.group(3))
+            if d and d.year >= 2024:
+                return d
+
+    # 3. Búsqueda global en todo el texto (descartando fechas de nacimiento / años < 2024)
+    m_dt = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})[\s,T\-]+(\d{1,2}):(\d{2})', texto_completo)
+    if m_dt:
+        d = _val(m_dt.group(1), m_dt.group(2), m_dt.group(3))
+        if d and d.year >= 2024:
+            return d
+
+    for m in re.finditer(r'\b(\d{1,2})\s+de\s+([a-zA-ZáéíóúÁÉÍÓÚ]+)\s+de(?:l)?\s+(\d{4})\b', texto_completo, re.I):
+        d = texto_a_fecha(m.group(0))
+        if d and d.year >= 2024:
+            return d
+
+    fechas_candidatas = []
+    for m in re.finditer(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b', texto_completo):
+        d = _val(m.group(1), m.group(2), m.group(3))
+        if d and d.year in (2025, 2026, 2027):
+            fechas_candidatas.append(d)
+
+    if fechas_candidatas:
+        f_2026 = [f for f in fechas_candidatas if f.year == 2026]
+        return f_2026[0] if f_2026 else fechas_candidatas[0]
+
+    return None
+
+
 # ============================================================
 # EXTRACTOR DOCUMENTO 1: Formato autogenerado (fecha solicitud)
 # ============================================================
@@ -279,38 +373,7 @@ class ExtractorFormatoAutogenerado:
             "raw_text": texto_completo,
         }
 
-        # Buscar fecha/hora cercana a palabras clave
-        texto_lower = texto_completo.lower()
-        mejor_pos = None
-        for palabra in cls.PALABRAS_CLAVE:
-            pos = texto_lower.find(palabra)
-            if pos != -1:
-                if mejor_pos is None or pos < mejor_pos:
-                    mejor_pos = pos
-
-        zona = texto_completo[max(0, (mejor_pos or 0) - 50): (mejor_pos or 0) + 300] if mejor_pos else texto_completo
-
-        fecha = None
-        m = cls.PATRON_FECHA_HORA.search(zona)
-        if m:
-            try:
-                fecha = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-            except ValueError:
-                pass
-
-        if not fecha:
-            m = cls.PATRON_FECHA_HORA.search(texto_completo)
-            if m:
-                try:
-                    fecha = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-                except ValueError:
-                    pass
-
-        if not fecha:
-            m = cls.PATRON_FECHA_TEXTO.search(texto_completo)
-            if m:
-                fecha = texto_a_fecha(m.group(0))
-
+        fecha = extraer_fecha_solicitud_de_texto(texto_completo)
         if fecha:
             resultado["fecha_solicitud"] = fecha
             resultado["fecha_solicitud_texto"] = fecha_a_texto(fecha)
@@ -2331,7 +2394,7 @@ class ExtractorPadron:
                 header_idx = None
                 for idx, row in raw_df.iloc[:20].iterrows():
                     row_str = " ".join(str(val or "").upper() for val in row.values)
-                    if any(w in row_str for w in ("DNI", "BECARIO", "NOMBRES", "APELLIDOS", "DOCUMENTO", "ESTUDIANTE", "PROGRAMA", "BENEFICIARIO")):
+                    if any(w in row_str for w in ("DNI", "BECARIO", "NOMBRES", "APELLIDOS", "DOCUMENTO", "ESTUDIANTE", "PROGRAMA", "BENEFICIARIO", "NEXPEDIENTE", "EXPEDIENTE")):
                         header_idx = idx
                         break
 
@@ -2411,10 +2474,20 @@ class ExtractorPadron:
         return None
 
     def _col_expediente(self) -> str | None:
-        """Identifica la columna de expediente o SIGEDO."""
+        """Identifica la columna de expediente del becario (NEXPEDIENTE)."""
         if self._df is None or self._df.empty:
             return None
         cols_norm = {c: self._norm(c) for c in self._df.columns}
+        # 1. Prioridad: NEXPEDIENTE o NEPEDIENTE o EXPEDIENTE BECARIO
+        for orig, n in cols_norm.items():
+            if any(k in n for k in ("NEXPEDIENTE", "NEPEDIENTE", "EXPEDIENTE BECARIO", "EXPEDIENTE SIBEC", "EXP BECARIO", "N EXPEDIENTE", "NRO EXPEDIENTE", "NUM EXPEDIENTE")):
+                return orig
+        # 2. Columnas que contengan EXPEDIENTE, NRO EXP sin ser trámite/sigedo/solicitud
+        for orig, n in cols_norm.items():
+            if any(k in n for k in ("EXPEDIENTE", "NRO EXP", "NUM EXP", "EXP")):
+                if not any(ex in n for ex in ("SIGEDO", "SOLICITUD", "TRAMITE", "DOC", "DOCUMENTO")):
+                    return orig
+        # 3. Fallback general
         for orig, n in cols_norm.items():
             if any(k in n for k in ("EXPEDIENTE", "NEPEDIENTE", "SIGEDO", "NRO EXP", "NUM EXP", "EXP")):
                 return orig
@@ -2442,12 +2515,12 @@ class ExtractorPadron:
     ) -> dict | None:
         """
         Búsqueda multinivel resiliente e infalible:
-        Nivel 0: Expediente SIGEDO directo.
-        Nivel 1: DNI directo.
+        Nivel 1: DNI directo (identificador único más confiable del becario).
         Nivel 2: DNI coincidente en el texto de los documentos.
         Nivel 3: Nombre completo unificado (concatenando todas las columnas de apellidos y nombres).
         Nivel 4: Tokens del nombre completo en los documentos.
-        Nivel 5: Búsqueda estricta por tokens en cualquier columna de la fila.
+        Nivel 5: Expediente directo (coincidencia EXACTA de dígitos).
+        Nivel 6: Búsqueda estricta por tokens en cualquier columna de la fila.
         """
         _log = log or (lambda msg: None)
         if self._df is None or self._df.empty:
@@ -2456,17 +2529,6 @@ class ExtractorPadron:
         col_dni = self._col_dni()
         col_exp = self._col_expediente()
         nom_cols = self._cols_nombres()
-
-        # --- Nivel 0: Búsqueda por Expediente SIGEDO directo ---
-        if expediente and col_exp:
-            exp_digitos = re.sub(r"\D", "", str(expediente).split("-")[0]).strip()
-            if exp_digitos and len(exp_digitos) >= 4:
-                for idx, val in self._df[col_exp].items():
-                    val_str = str(val or "").strip()
-                    val_digitos = re.sub(r"\D", "", val_str.split("-")[0]).strip()
-                    if val_digitos == exp_digitos or exp_digitos in val_str:
-                        _log(f"  [Padrón Nivel 0] Becario hallado por Expediente directo: {exp_digitos}")
-                        return self._df.loc[idx].to_dict()
 
         # --- Nivel 1: DNI directo ---
         if dni_succor:
@@ -2536,7 +2598,18 @@ class ExtractorPadron:
                 _log(f"  [Padrón Nivel 4] Becario hallado por coincidencia de {max_matches} nombres/apellidos en los documentos.")
                 return mejor_fila
 
-        # --- Nivel 5: Búsqueda estricta en cualquier columna de la fila Excel ---
+        # --- Nivel 5: Búsqueda por Expediente directo exacto ---
+        if expediente and col_exp:
+            exp_digitos = re.sub(r"\D", "", str(expediente).split("-")[0]).strip()
+            if exp_digitos and len(exp_digitos) >= 4:
+                for idx, val in self._df[col_exp].items():
+                    val_str = str(val or "").strip()
+                    val_digitos = re.sub(r"\D", "", val_str.split("-")[0]).strip()
+                    if val_digitos == exp_digitos:
+                        _log(f"  [Padrón Nivel 5] Becario hallado por Expediente directo exacto: {exp_digitos}")
+                        return self._df.loc[idx].to_dict()
+
+        # --- Nivel 6: Búsqueda estricta en cualquier columna de la fila Excel ---
         if texto_comb:
             texto_comb_norm = self._norm(texto_comb)
             mejor_fila = None
@@ -2553,7 +2626,7 @@ class ExtractorPadron:
                     mejor_fila = row.to_dict()
 
             if mejor_fila:
-                _log(f"  [Padrón Nivel 5] Becario hallado por coincidencia estricta de {max_matches} palabras en la fila.")
+                _log(f"  [Padrón Nivel 6] Becario hallado por coincidencia estricta de {max_matches} palabras en la fila.")
                 return mejor_fila
 
         return None
@@ -2563,9 +2636,9 @@ class ExtractorPadron:
         if self._df is None or self._df.empty or not dni:
             return ""
 
-        col_dni = self._col("dni")
-        col_exp = self._col("expediente")
-        if not col_dni or not col_exp:
+        col_dni = self._col_dni() or self._col("dni")
+        col_exp = self._col_expediente() or self._col("expediente")
+        if not col_dni:
             return ""
 
         dni_limpio = limpiar_dni(dni)
@@ -2591,14 +2664,25 @@ class ExtractorPadron:
                 fi = texto_a_fecha(fecha_ini_str)
                 ff = texto_a_fecha(fecha_fin_str)
                 
-                exp_actual = str(row[col_exp]).strip()
+                exp_actual = ""
+                if col_exp and col_exp in row:
+                    exp_actual = str(row[col_exp]).strip()
+                if not exp_actual or exp_actual.lower() == "nan":
+                    for norm_k, orig_col in cols_norm.items():
+                        if any(w in norm_k for w in ("NEXPEDIENTE", "NEPEDIENTE", "EXPEDIENTE BECARIO", "EXPEDIENTE SIBEC", "EXP BECARIO", "N EXPEDIENTE")):
+                            val = str(row[orig_col]).strip()
+                            if val and val.lower() != "nan":
+                                exp_actual = val
+                                break
+
                 if exp_actual and exp_actual.lower() != "nan":
+                    exp_actual = re.sub(r"\.0+$", "", exp_actual).strip()
                     exp_fallback = exp_actual
 
                 if fi and ff and fi <= hoy <= ff:
                     return exp_actual
 
-        return exp_fallback
+        return re.sub(r"\.0+$", "", exp_fallback).strip()
 
     def extraer_datos(self, fila: dict) -> dict:
         """A partir de una fila del DataFrame extrae y consolida los datos normalizados del becario uniendo Apellidos y Nombres."""
@@ -2704,6 +2788,28 @@ class ExtractorPadron:
         # CARRERA
         carrera = _get_val("CARRERA", "PROGRAMA ESTUDIOS", "PROGRAMA_ESTUDIOS", "ESPECIALIDAD", "CARRERA PROFESIONAL", "ESCUELA PROFESIONAL", "ESCUELA")
 
+        # Expediente del becario en el padrón (NEXPEDIENTE / EXPEDIENTE_BECARIO)
+        exp_padron = ""
+        for norm_k, orig_col in cols_norm.items():
+            if any(w in norm_k for w in ("NEXPEDIENTE", "NEPEDIENTE", "EXPEDIENTE BECARIO", "EXPEDIENTE SIBEC", "EXP BECARIO", "N EXPEDIENTE", "NRO EXPEDIENTE", "NUM EXPEDIENTE")):
+                val = str(fila[orig_col]).strip()
+                if val and val.lower() != "nan":
+                    exp_padron = val
+                    break
+        if not exp_padron:
+            for norm_k, orig_col in cols_norm.items():
+                if any(w in norm_k for w in ("EXPEDIENTE", "NRO EXP", "NUM EXP")):
+                    if not any(ex in norm_k for ex in ("SIGEDO", "SOLICITUD", "TRAMITE", "DOC", "DOCUMENTO")):
+                        val = str(fila[orig_col]).strip()
+                        if val and val.lower() != "nan":
+                            exp_padron = val
+                            break
+        if not exp_padron:
+            exp_padron = _get_val("EXPEDIENTE", "EXP")
+
+        if exp_padron:
+            exp_padron = re.sub(r"\.0+$", "", exp_padron).strip()
+
         return {
             "dni_validado": dni,
             "apellidos_becario": apellidos,
@@ -2717,6 +2823,9 @@ class ExtractorPadron:
             "rj_adjudicacion": rj_adjudicacion,
             "institucion": institucion,
             "carrera": carrera,
+            "nexpediente": exp_padron,
+            "expediente_padron": exp_padron,
+            "expediente_becario": exp_padron,
         }
 
 
@@ -2767,7 +2876,9 @@ def formatear_nombre_ies(nombre: str) -> str:
     # Si viene incompleto como 'Pontificia Universidad' o 'PUCP', expandir al nombre oficial completo
     if re.search(r"^\s*Pontificia\s+Universidad(?:\s+Cat[oó]lica)?\s*$", nombre_clean, re.IGNORECASE) or re.search(r"\bPUCP\b", nombre_clean, re.IGNORECASE):
         return "Pontificia Universidad Católica del Perú"
-    if "Pontificia Universidad" in nombre_clean and "Católica del Perú" not in nombre_clean and "Catolica del Peru" not in nombre_clean:
+    if "Pontificia Universidad" in nombre_clean and ("Católica" in nombre_clean or "Catolica" in nombre_clean):
+        return "Pontificia Universidad Católica del Perú"
+    if "Pontificia Universidad" in nombre_clean:
         return "Pontificia Universidad Católica del Perú"
 
     palabras = nombre_clean.split()
@@ -2789,13 +2900,15 @@ def formatear_nombre_ies(nombre: str) -> str:
 
 
 def normalizar_nombre_ies_completo(nombre: str, texto_contexto: str = "") -> str:
-    """Normaliza y expande nombres de instituciones de educación superior asegurando nombres oficiales completos."""
+    """Normaliza y expande nombres de instituciones de educación superior asegurando nombres oficiales completos y sin sedes."""
     if not nombre:
         nombre = ""
-    n = str(nombre).strip()
+    n = limpiar_nombre_ies(str(nombre)).strip()
     if re.search(r"^\s*Pontificia\s+Universidad(?:\s+Cat[oó]lica)?\s*$", n, re.IGNORECASE) or re.search(r"\bPUCP\b", n, re.IGNORECASE):
         return "Pontificia Universidad Católica del Perú"
-    if "Pontificia Universidad" in n and "Católica del Perú" not in n and "Catolica del Peru" not in n:
+    if "Pontificia Universidad" in n and ("Católica" in n or "Catolica" in n):
+        return "Pontificia Universidad Católica del Perú"
+    if "Pontificia Universidad" in n:
         return "Pontificia Universidad Católica del Perú"
     if not n and texto_contexto:
         if re.search(r"Pontificia\s+Universidad\s+Cat[oó]lica\s+del\s+Per[uú]|\bPUCP\b", texto_contexto, re.IGNORECASE):
@@ -2807,6 +2920,9 @@ def normalizar_nombre_ies_completo(nombre: str, texto_contexto: str = "") -> str
         elif re.search(r"Universidad\s+Nacional\s+de\s+Ingenier[ií]a|\bUNI\b", texto_contexto, re.IGNORECASE):
             return "Universidad Nacional de Ingeniería"
     return formatear_nombre_ies(n)
+
+
+limpiar_nombre_ies_sin_sede = normalizar_nombre_ies_completo
 
 
 def deducir_carrera_por_cursos(cursos: list[str]) -> str:
@@ -2866,12 +2982,14 @@ def deducir_carrera_por_cursos(cursos: list[str]) -> str:
 
 
 def limpiar_nombre_ies(nombre: str) -> str:
-    """Elimina sufijos de sede de la institución. Ej: 'Univ. X / Sede Lima' -> 'Univ. X'."""
+    """Elimina sufijos de sede, filial o campus de la institución."""
     if not nombre:
-        return nombre
-    nombre = re.sub(r"[\s\.]*[/\-]\s*Sede\s+.+", "", nombre, flags=re.IGNORECASE)
-    nombre = re.sub(r"\s+Sede\s+.+", "", nombre, flags=re.IGNORECASE)
-    return nombre.strip().strip(".")
+        return ""
+    nombre = re.sub(r"[\s\.]*[/\-–—]\s*(?:Sede|Filial|Campus|Local|Sucursal)\b.*$", "", str(nombre), flags=re.IGNORECASE)
+    nombre = re.sub(r"\s*,\s*(?:Sede|Filial|Campus|Local|Sucursal)\b.*$", "", nombre, flags=re.IGNORECASE)
+    nombre = re.sub(r"\s+\b(?:Sede|Filial|Campus|Local)\s+.*$", "", nombre, flags=re.IGNORECASE)
+    nombre = re.sub(r"[\s\/\-–—\.]+$", "", nombre).strip()
+    return nombre
 
 
 def limpiar_nombre_informe(nombre: str) -> str:
@@ -2893,6 +3011,26 @@ def normalizar_sigedo_con_anio(sigedo: str, anio: int | str = 2026) -> str:
     return s
 
 
+def corregir_nombre_beca_excelencia(texto: str) -> str:
+    """Renombra 'Beca Excelencia' por 'Beca de Excelencia Académica para Hijos de Docentes'."""
+    if not texto:
+        return ""
+    s = str(texto)
+    # Mayúsculas completas
+    s = re.sub(
+        r'\bBECA\s+(?:DE\s+)?EXCELENCIA\b(?!\s+ACAD[EÉ]MICA)',
+        'BECA DE EXCELENCIA ACADÉMICA PARA HIJOS DE DOCENTES',
+        s
+    )
+    # Title Case o mixto
+    s = re.sub(
+        r'\b[Bb]eca\s+(?:de\s+)?[Ee]xcelencia\b(?!\s+[Aa]cad[eé]mica)',
+        'Beca de Excelencia Académica para Hijos de Docentes',
+        s
+    )
+    return s
+
+
 def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: dict | None = None) -> str:
     """Calcula el texto unificado de Beca y Convocatoria para el Asunto y Numeral 2.1."""
     becas_conv = []
@@ -2902,6 +3040,7 @@ def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: di
             prog = b.get("PROGRAMA_BECA", "")
             conv = b.get("CONVOCATORIA", "")
             b_c = limpiar_beca_convocatoria(prog, conv)
+        b_c = corregir_nombre_beca_excelencia(b_c)
         if b_c and b_c not in becas_conv:
             becas_conv.append(b_c)
     
@@ -2909,20 +3048,24 @@ def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: di
         succor_txt = datos_succor.get("raw_text", "")
         m_bc = re.search(r"\b(Beca\s+[A-Za-z0-9]+(?:\s*-\s*Modalidad\s+[A-Za-z0-9]+)?)[,\s]+(?:convocatoria\s+)?(20\d{2})\b", succor_txt, re.IGNORECASE)
         if m_bc:
-            becas_conv.append(f"{m_bc.group(1).title()} - Convocatoria {m_bc.group(2)}")
+            cand_b = f"{m_bc.group(1).title()} - Convocatoria {m_bc.group(2)}"
+            becas_conv.append(corregir_nombre_beca_excelencia(cand_b))
             
     if not becas_conv:
         return "Beca 18 - Convocatoria 2023"
         
     formateadas = []
     for bc in becas_conv:
-        m = re.match(r"(.*?)\s*-\s*(\d{4})", bc)
+        bc_corr = corregir_nombre_beca_excelencia(bc)
+        m = re.match(r"(.*?)\s*-\s*(\d{4})", bc_corr)
         if m:
-            nom_b = m.group(1).title()
+            nom_b = m.group(1).strip()
+            if "EXCELENCIA ACADÉMICA" not in nom_b.upper() and "EXCELENCIA ACADEMICA" not in nom_b.upper():
+                nom_b = nom_b.title()
             anio = m.group(2)
             formateadas.append(f"{nom_b} - Convocatoria {anio}")
         else:
-            formateadas.append(bc.title())
+            formateadas.append(bc_corr)
             
     if len(formateadas) == 1:
         return formateadas[0]
@@ -2934,10 +3077,15 @@ def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: di
 def limpiar_beca_convocatoria(programa: str, convocatoria: str) -> str:
     """Genera texto limpio de beca y año. Ej: 'BECA 18 BECA REPARED', '2021' -> 'BECA 18 - 2021'."""
     if not programa:
-        return f"{convocatoria}".strip() if convocatoria else ""
+        res = f"{convocatoria}".strip() if convocatoria else ""
+        return corregir_nombre_beca_excelencia(res)
     prog = programa.strip()
-    m = re.match(r"(BECA\s+\w+)", prog, re.IGNORECASE)
-    nombre_beca = m.group(1).strip() if m else prog
+    if "EXCELENCIA" in prog.upper():
+        nombre_beca = "Beca de Excelencia Académica para Hijos de Docentes"
+    else:
+        m = re.match(r"(BECA\s+\w+)", prog, re.IGNORECASE)
+        nombre_beca = m.group(1).strip() if m else prog
+        nombre_beca = corregir_nombre_beca_excelencia(nombre_beca)
     anio = re.search(r"\b(20\d{2})\b", convocatoria or "") or re.search(r"\b(20\d{2})\b", programa or "")
     anio_str = anio.group(1) if anio else convocatoria
     if anio_str:
@@ -3008,7 +3156,10 @@ class ProcesadorInformes:
         self._progreso(0.05, "Extrayendo fecha de solicitud...")
         self._log("Doc.1: Leyendo formato autogenerado...")
         datos_fmt = ExtractorFormatoAutogenerado.extraer(self.ruta_formato_autogenerado)
+        ctx["FECHA_SOLICITUD_OBJ"] = datos_fmt.get("fecha_solicitud")
         ctx["FECHA_SOLICITUD_TEXTO"] = datos_fmt.get("fecha_solicitud_texto", "(no detectada)")
+        ctx["FECHA_SOLICITUD"] = ctx["FECHA_SOLICITUD_TEXTO"]
+        ctx["FECHA_SOL"] = ctx["FECHA_SOLICITUD_TEXTO"]
         # REFERENCIA_A — literal a) con fecha de solicitud
         ctx["REFERENCIA_A"] = f"a) Solicitud ingresada por mesa de partes el {ctx['FECHA_SOLICITUD_TEXTO']}"
         self._log(f"  Fecha de solicitud: {ctx['FECHA_SOLICITUD_TEXTO']}")
@@ -3134,6 +3285,11 @@ class ProcesadorInformes:
             self._log(f"  Sexo (BD): {datos_bd['sexo']}")
 
             ctx["DNI_VALIDADO"] = datos_bd["dni_validado"] or dni_succor
+
+            exp_padron_bd = str(datos_bd.get("nexpediente") or datos_bd.get("expediente_padron") or "").strip()
+            if exp_padron_bd:
+                exp_padron_bd = re.sub(r"\.0+$", "", exp_padron_bd).strip()
+            ctx["EXPEDIENTE_PADRON"] = exp_padron_bd
 
             # Apellidos y nombres separados para la tabla del becario
             apellidos_bd = datos_bd.get("apellidos_becario", "")
@@ -3391,7 +3547,24 @@ class ProcesadorInformes:
         ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
         ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
         ctx["TELEFONO_CONTACTO"] = datos_fmt.get("telefono_contacto", "")
-        ctx["EXPEDIENTE_BECARIO"] = padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
+        exp_sol_ind = str(datos_fmt.get("numero_expediente", "")).strip() or str(ctx.get("NUMERO_SIGEDO", "")).split("-")[0].strip()
+        exp_pad_ind = ctx.get("EXPEDIENTE_PADRON") or padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
+        exp_pad_ind = re.sub(r"\.0+$", "", str(exp_pad_ind or "")).strip()
+        exp_succor_ind = str(datos_succor.get("expediente", "")).strip()
+
+        # Prioridad estricta para el número de expediente del becario:
+        # 1. Padrón (NEXPEDIENTE, ej. 865990)
+        # 2. SUCCOR
+        # 3. Solicitud Mesa de Partes (ej. 60187) como último recurso
+        exp_final_ind = exp_pad_ind or exp_succor_ind or exp_sol_ind
+        exp_final_ind = re.sub(r"\.0+$", "", str(exp_final_ind)).strip()
+
+        ctx["EXPEDIENTE_BECARIO"] = exp_final_ind
+        ctx["EXPEDIENTE"] = exp_final_ind
+        ctx["NUMERO_EXPEDIENTE"] = exp_final_ind
+        ctx["EXPEDIENTE_PADRON"] = exp_pad_ind or exp_final_ind
+        ctx["EXPEDIENTE_SOLICITUD"] = exp_sol_ind
+        ctx["SOLICITUD_MESA_PARTES"] = exp_sol_ind
 
         sigedo_full = ctx.get("NUMERO_SIGEDO", "")
         ctx["SIGEDO_CORTO"] = sigedo_full.split("-")[0] if "-" in sigedo_full else sigedo_full
@@ -3617,6 +3790,12 @@ class ProcesadorInformes:
                 ctx["INSTITUCION"] = normalizar_nombre_ies_completo(inst_raw_bd) if inst_raw_bd else ""
                 ctx["CARRERA"] = datos_bd.get("carrera", "")
                 
+                # NEXPEDIENTE del padrón
+                exp_padron_bd = str(datos_bd.get("nexpediente") or datos_bd.get("expediente_padron") or "").strip()
+                if exp_padron_bd:
+                    exp_padron_bd = re.sub(r"\.0+$", "", exp_padron_bd).strip()
+                ctx["EXPEDIENTE_PADRON"] = exp_padron_bd
+
                 # Actualizar INSTITUCION_GLOBAL en Title Case para partes narrativas
                 if ctx["INSTITUCION"] and not super_contexto["INSTITUCION_GLOBAL"]:
                     super_contexto["INSTITUCION_GLOBAL"] = ctx["INSTITUCION"]
@@ -3691,11 +3870,28 @@ class ProcesadorInformes:
                 ctx.update({k.upper(): v for k, v in concordancias.items()})
                 ctx["TRATO_GENERO"] = "Señorita" if gen_fb == "F" else "Señor"
                 
-            exp_padron = padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
-            exp_final = exp_padron if exp_padron else expediente
+            # Prioridad estricta para el número de expediente del becario:
+            # 1. NEXPEDIENTE del Padrón (identificador oficial del becario en SIBEC, ej. 865990)
+            # 2. Expediente extraído del Informe SUCCOR para dicho becario
+            # 3. Formato Autogenerado (número de solicitud / trámite Mesa de Partes, ej. 60187) como último recurso
+            if not ctx.get("EXPEDIENTE_PADRON"):
+                exp_padron_vig = padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
+                if exp_padron_vig:
+                    ctx["EXPEDIENTE_PADRON"] = re.sub(r"\.0+$", "", str(exp_padron_vig)).strip()
+
+            exp_padron_final = str(ctx.get("EXPEDIENTE_PADRON", "")).strip()
+            exp_succor_b = str(bec_succor.get("expediente", "")).strip() if bec_succor else ""
+            exp_solicitud = str(expediente or "").strip()
+
+            exp_final = exp_padron_final or exp_succor_b or exp_solicitud
+            exp_final = re.sub(r"\.0+$", "", str(exp_final)).strip()
+
             ctx["EXPEDIENTE"] = exp_final
             ctx["NUMERO_EXPEDIENTE"] = exp_final
             ctx["EXPEDIENTE_BECARIO"] = exp_final
+            ctx["EXPEDIENTE_PADRON"] = exp_padron_final or exp_final
+            ctx["EXPEDIENTE_SOLICITUD"] = exp_solicitud
+            ctx["SOLICITUD_MESA_PARTES"] = exp_solicitud
             
             # Fallbacks en caso de campos vacíos
             if not ctx.get("RJD_ADJUDICACION"):
@@ -3722,6 +3918,8 @@ class ProcesadorInformes:
                 ctx["CARRERA"] = (bec_succor.get("carrera") if bec_succor else "") or datos_succor.get("carrera", "")
                 
             ctx["FECHA_SOLICITUD_TEXTO"] = datos_fmt.get("fecha_solicitud_texto", "")
+            ctx["FECHA_SOLICITUD_OBJ"] = f_sol_obj
+            ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = corregir_nombre_beca_excelencia(ctx.get("BECA_Y_CONVOCATORIA_VALIDADA", ""))
             ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
             ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
             ctx["TELEFONO_CONTACTO"] = datos_fmt.get("telefono_contacto", "")
@@ -3890,6 +4088,8 @@ class ProcesadorInformes:
             super_contexto["REFERENCIAS"].append(super_contexto["REFERENCIA_SUCCOR"])
             
         super_contexto["BECA_TITULO_GLOBAL"] = determinar_beca_convocatoria_multiple(super_contexto["becarios"], datos_succor)
+        super_contexto["BECA_TITULO_GLOBAL"] = corregir_nombre_beca_excelencia(super_contexto["BECA_TITULO_GLOBAL"])
+        super_contexto["FECHAS_SOLICITUD_TODAS_OBJS"] = fechas_solicitud_todas
         if fechas_solicitud_todas:
             super_contexto["FECHAS_SOLICITUD_TEXTO"] = formatear_fechas_solicitud(fechas_solicitud_todas)
         else:
@@ -3914,9 +4114,14 @@ class ProcesadorInformes:
         # Generar Informe Múltiple
         try:
             ruta_inf = gen_word.generar_informe_multiple(super_contexto, self._log)
-            rutas_salida.append(ruta_inf)
+            if ruta_inf and Path(ruta_inf).exists():
+                rutas_salida.append(ruta_inf)
+                self._log(f"  [OK] Informe múltiple generado: {ruta_inf.name}")
+            else:
+                self._log(f"  [ADVERTENCIA] No se pudo verificar la existencia del archivo de informe múltiple.")
         except Exception as e:
-            self._log(f"Error generando informe múltiple: {e}")
+            import traceback
+            self._log(f"Error generando informe múltiple: {e}\n{traceback.format_exc()}")
             
         self._progreso(0.9, "Generando Notificaciones Múltiples...")
         # Generar Notificaciones Múltiples (casilla y/o correo según autorización)
