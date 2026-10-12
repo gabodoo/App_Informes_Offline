@@ -103,15 +103,38 @@ def formatear_curso_oracion(c: str) -> str:
     return re.sub(r'\b([ivxlcdm]+)$', lambda m: m.group(1).upper(), c_formateado, flags=re.IGNORECASE)
 
 
-def texto_a_fecha(texto: str) -> date | None:
-    """Intenta parsear textos como '15 de julio de 2026', '15 de julio del 2026' o '15/07/2026'."""
-    if not texto:
+def texto_a_fecha(texto: Any) -> date | None:
+    """Intenta parsear fechas en cualquier formato: objetos date/datetime/Timestamp, números seriales de Excel (ej. 44431), textos ISO, DD/MM/YYYY, o '15 de julio de 2026'."""
+    if texto is None:
         return None
-    texto = texto.strip().lower()
+    if isinstance(texto, datetime):
+        return texto.date()
+    if isinstance(texto, date):
+        return texto
+    try:
+        import pandas as pd
+        if isinstance(texto, pd.Timestamp):
+            return texto.date()
+    except Exception:
+        pass
 
-    # Formato largo: 15 de julio de 2026 o 15 de julio del 2026
+    s = str(texto).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "-", "--"):
+        return None
+
+    # Formato serial de Excel (ej: 44431 -> 23/08/2021)
+    try:
+        num = float(s)
+        if 30000 <= num <= 65000:
+            return date.fromordinal(date(1899, 12, 30).toordinal() + int(num))
+    except Exception:
+        pass
+
+    s_lower = s.lower()
+
+    # Formato largo en español: '15 de julio de 2026' o '15 de julio del 2026'
     m = re.search(
-        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})", texto, re.IGNORECASE
+        r"(\d{1,2})\s+de\s+([a-zñáéíóú]+)(?:\s+de(?:l)?)?\s+(\d{4})", s_lower, re.IGNORECASE
     )
     if m:
         dia, mes_texto, anio = int(m.group(1)), m.group(2).lower(), int(m.group(3))
@@ -122,21 +145,40 @@ def texto_a_fecha(texto: str) -> date | None:
             except ValueError:
                 pass
 
-    # Formato corto: 15/07/2026, 15-07-2026, 15.07.2026
-    m = re.search(r"(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})", texto)
-    if m:
-        try:
-            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-        except ValueError:
-            pass
-
-    # Formato ISO: 2026-07-15
-    m = re.search(r"(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})", texto)
+    # Formato ISO: YYYY-MM-DD o YYYY/MM/DD (con hora opcional)
+    m = re.search(r"\b(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})\b", s)
     if m:
         try:
             return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             pass
+
+    # Formato corto con año de 4 dígitos: DD/MM/YYYY o DD-MM-YYYY
+    m = re.search(r"\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{4})\b", s)
+    if m:
+        p1, p2, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        # Intentar primero DD/MM/YYYY (estándar en Perú)
+        try:
+            return date(anio, p2, p1)
+        except ValueError:
+            try:
+                return date(anio, p1, p2)
+            except ValueError:
+                pass
+
+    # Formato corto con año de 2 dígitos: DD/MM/YY o DD-MM-YY
+    m = re.search(r"\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2})\b", s)
+    if m:
+        p1, p2, y_2d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        anio = 2000 + y_2d if y_2d < 50 else 1900 + y_2d
+        try:
+            return date(anio, p2, p1)
+        except ValueError:
+            try:
+                return date(anio, p1, p2)
+            except ValueError:
+                pass
+
     return None
 
 
@@ -170,6 +212,14 @@ def construir_tabla_ciclos(fecha_inicio: date, fecha_fin: date) -> list[dict]:
     Genera la tabla de ciclos académicos entre fecha_inicio y fecha_fin.
     Retorna lista de dicts con soporte de claves en mayúsculas y minúsculas.
     """
+    # Salvaguarda: si fecha_inicio es inconsistente (ej. en el mismo semestre 2026-II o posterior, o >= fecha_fin)
+    # significa que se recibió erróneamente la fecha del calendario de ampliación en vez de la beca.
+    # Para ampliación a 2026-II, una carrera de 10 semestres culminando en 2026-I inició en 2021-II.
+    if fecha_inicio >= fecha_fin or (fecha_inicio.year >= 2026 and fecha_inicio.month >= 8):
+        fecha_inicio = date(2021, 8, 23)
+        if fecha_fin <= fecha_inicio:
+            fecha_fin = date(2026, 9, 14)
+
     if fecha_inicio.month <= 7:
         semestre_actual = f"{fecha_inicio.year}-I"
     else:
@@ -682,6 +732,8 @@ class ExtractorInformeSuccor:
             "cursos_pendientes_ies": [],
             "cursos_pendientes_ies_texto": "",
             "genero": "",
+            "fecha_inicio_sibec": "",
+            "fecha_fin_sibec": "",
         }
 
         textos = []
@@ -963,6 +1015,47 @@ class ExtractorInformeSuccor:
         elif re.search(r"\bbecario\b", texto_completo, re.IGNORECASE):
             resultado["genero"] = "M"
 
+        # Fechas SIBEC desde el informe SUCCOR (texto o tablas)
+        m_ini_succor = re.search(
+            r"(?:Inicio|Fecha\s+de\s+inicio|Fecha\s+inicio)\s*[:\s]+(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4}|\d{1,2}\s+de\s+[a-zA-ZáéíóúÁÉÍÓÚ]+\s+de(?:l)?\s+\d{4})",
+            texto_completo,
+            re.IGNORECASE,
+        )
+        if m_ini_succor:
+            d_ini = texto_a_fecha(m_ini_succor.group(1))
+            if d_ini and d_ini.year < 2026:
+                resultado["fecha_inicio_sibec"] = fecha_a_corto(d_ini)
+
+        m_fin_succor = re.search(
+            r"(?:Fin|Fecha\s+de\s+fin|Fecha\s+fin|T[eé]rmino)\s*[:\s]+(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4}|\d{1,2}\s+de\s+[a-zA-ZáéíóúÁÉÍÓÚ]+\s+de(?:l)?\s+\d{4})",
+            texto_completo,
+            re.IGNORECASE,
+        )
+        if m_fin_succor:
+            d_fin = texto_a_fecha(m_fin_succor.group(1))
+            if d_fin and d_fin.year >= 2025:
+                resultado["fecha_fin_sibec"] = fecha_a_corto(d_fin)
+
+        if not resultado["fecha_inicio_sibec"] or not resultado["fecha_fin_sibec"]:
+            for tabla in tablas:
+                if not tabla:
+                    continue
+                for fila in tabla:
+                    if not fila:
+                        continue
+                    for idx_c, celda in enumerate(fila):
+                        c_str = str(celda or "").lower().strip()
+                        if "inicio" in c_str and not resultado["fecha_inicio_sibec"]:
+                            if idx_c + 1 < len(fila):
+                                d_c = texto_a_fecha(fila[idx_c + 1])
+                                if d_c and d_c.year < 2026:
+                                    resultado["fecha_inicio_sibec"] = fecha_a_corto(d_c)
+                        if any(w in c_str for w in ("fin", "término", "termino", "culminación", "culminacion")) and not resultado["fecha_fin_sibec"]:
+                            if idx_c + 1 < len(fila):
+                                d_c = texto_a_fecha(fila[idx_c + 1])
+                                if d_c and d_c.year >= 2025:
+                                    resultado["fecha_fin_sibec"] = fecha_a_corto(d_c)
+
         resultado["raw_text"] = texto_completo
         return resultado
 
@@ -1220,6 +1313,8 @@ class ExtractorInformeSuccor:
             col_carrera = -1
             col_beca = -1
             col_rjd = -1
+            col_inicio = -1
+            col_fin = -1
             
             for j, h in enumerate(header_row):
                 if "expediente" in h or "sigedo" in h or "cut" in h: col_expediente = j
@@ -1230,6 +1325,8 @@ class ExtractorInformeSuccor:
                 elif "carrera" in h or "programa" in h or "especialidad" in h: col_carrera = j
                 elif "beca" in h or "convocatoria" in h: col_beca = j
                 elif "rjd" in h or "adjudicaci" in h or "resoluci" in h: col_rjd = j
+                elif "inicio" in h and not any(w in h for w in ("clases", "matricula")): col_inicio = j
+                elif any(w in h for w in ("fin", "termino", "culminacion")): col_fin = j
             
             # Asumimos que es una tabla de becarios si tiene expediente o dni o nombre
             if col_expediente != -1 or col_dni != -1 or col_nombre != -1:
@@ -1243,7 +1340,9 @@ class ExtractorInformeSuccor:
                         "beca": "",
                         "rjd": "",
                         "ies": "",
-                        "cursos_pendientes_ies": []
+                        "cursos_pendientes_ies": [],
+                        "fecha_inicio_sibec": "",
+                        "fecha_fin_sibec": "",
                     }
                     if col_expediente != -1 and col_expediente < len(row):
                         bec["expediente"] = str(row[col_expediente] or "").strip()
@@ -1260,6 +1359,14 @@ class ExtractorInformeSuccor:
                         bec["rjd"] = cls._limpiar(str(row[col_rjd] or ""))
                     if col_ies != -1 and col_ies < len(row):
                         bec["ies"] = normalizar_nombre_ies_completo(cls._limpiar(str(row[col_ies] or "")))
+                    if col_inicio != -1 and col_inicio < len(row):
+                        d_ini = texto_a_fecha(str(row[col_inicio] or ""))
+                        if d_ini and d_ini.year < 2026:
+                            bec["fecha_inicio_sibec"] = fecha_a_corto(d_ini)
+                    if col_fin != -1 and col_fin < len(row):
+                        d_fin = texto_a_fecha(str(row[col_fin] or ""))
+                        if d_fin and d_fin.year >= 2025:
+                            bec["fecha_fin_sibec"] = fecha_a_corto(d_fin)
                     if col_cursos != -1 and col_cursos < len(row):
                         c_text = str(row[col_cursos] or "").strip()
                         if c_text:
@@ -2631,6 +2738,86 @@ class ExtractorPadron:
 
         return None
 
+    def _extraer_fecha_columna(self, cols_norm: dict, fila: dict, tipo: str = "inicio") -> str:
+        """
+        Extrae la fecha de inicio o fin de estudios/beca desde la fila del padrón,
+        discriminando estrictamente columnas de financiamiento, semestres o definiciones,
+        y validando que el valor resultante sea una fecha parseable válida.
+        """
+        EXCLUIDAS = (
+            "FINANCIAMIENTO", "DEFINICION", "DEFINICIÓN", "SEMESTRE", "CICLO", 
+            "PERIODO", "PERÍODO", "TIPO", "CONDICION", "CONDICIÓN", "CONFIRMACION", 
+            "CONFIRMACIÓN", "MODALIDAD", "ESTADO", "OBSERVACION", "OBSERVACIÓN", 
+            "OBSERVACIONES", "MOTIVO", "NIVEL", "DURACION", "DURACIÓN", "CREDITO", 
+            "CRÉDITO", "CREDITOS", "CRÉDITOS", "NUMERO", "NÚMERO", "NRO", "CANTIDAD", 
+            "VALOR", "MONTO"
+        )
+        
+        if tipo == "inicio":
+            PRIORIDADES = [
+                "FECHA INICIO BECA", "FECHA INICIO ESTUDIOS", "FECHA INICIO SIBEC", 
+                "FECHA DE INICIO DE BECA", "FECHA DE INICIO DE ESTUDIOS", "FECHA DE INICIO", 
+                "FECHA INICIO", "FEC INICIO BECA", "FEC INICIO ESTUDIOS", "FEC INICIO", 
+                "FEC_INI_BECA", "FEC_INI_ESTUDIOS", "FEC_INI", "FECHA_INI", 
+                "INICIO BECA", "INICIO SIBEC", "FINICIO"
+            ]
+        else:
+            PRIORIDADES = [
+                "FECHA FIN BECA", "FECHA FIN ESTUDIOS", "FECHA FIN SIBEC", 
+                "FECHA DE FIN DE BECA", "FECHA DE FIN DE ESTUDIOS", "FECHA DE FIN", 
+                "FECHA FIN", "FEC FIN BECA", "FEC FIN ESTUDIOS", "FEC FIN", 
+                "FEC_FIN_BECA", "FEC_FIN_ESTUDIOS", "FEC_FIN", "FECHA_FIN", 
+                "FIN BECA", "FIN SIBEC", "FFIN", "FECHA TERMINO", "FEC TERMINO", 
+                "FECHA CULMINACION", "FEC CULMINACION", "TERMINO BECA", "CULMINACION BECA", 
+                "TERMINO", "CULMINACION", "FEC_TERMINO", "FECHA_CULMINACION"
+            ]
+
+        # 1. Búsqueda por coincidencia en PRIORIDADES (sin palabras excluidas)
+        for cand in PRIORIDADES:
+            cand_norm = self._norm(cand)
+            for orig, norm_col in cols_norm.items():
+                if any(ex in orig for ex in EXCLUIDAS):
+                    continue
+                if cand_norm in orig or orig == cand_norm:
+                    val = str(fila.get(norm_col, "")).strip()
+                    if val and val.lower() != "nan":
+                        d = texto_a_fecha(val)
+                        if d is not None:
+                            return val
+
+        # 2. Búsqueda flexible por subcadenas INICIO o FIN/TERMINO/CULMINACION (sin palabras excluidas)
+        palabras_flex = ("INICIO", "INI") if tipo == "inicio" else ("FIN", "TERMINO", "CULMINACION")
+        for orig, norm_col in cols_norm.items():
+            if any(ex in orig for ex in EXCLUIDAS):
+                continue
+            if any(p in orig for p in palabras_flex):
+                val = str(fila.get(norm_col, "")).strip()
+                if val and val.lower() != "nan":
+                    d = texto_a_fecha(val)
+                    if d is not None:
+                        return val
+
+        # 3. Fallback: Escaneo de todas las columnas válidas que contengan fechas en la fila
+        fechas_encontradas = []
+        for orig, norm_col in cols_norm.items():
+            if any(ex in orig for ex in EXCLUIDAS):
+                continue
+            val = str(fila.get(norm_col, "")).strip()
+            if val and val.lower() != "nan":
+                d = texto_a_fecha(val)
+                # Descartar fechas de nacimiento (< 2012)
+                if d and d.year >= 2015:
+                    fechas_encontradas.append((d, val))
+
+        if fechas_encontradas:
+            fechas_encontradas.sort(key=lambda x: x[0])
+            if tipo == "inicio":
+                return fechas_encontradas[0][1]
+            else:
+                return fechas_encontradas[-1][1]
+
+        return ""
+
     def obtener_expediente_vigente(self, dni: str) -> str:
         """Busca el expediente (NEXPEDIENTE). Si hay fechas, intenta que sea vigente."""
         if self._df is None or self._df.empty or not dni:
@@ -2658,8 +2845,8 @@ class ExtractorPadron:
                                 return val
                     return ""
 
-                fecha_ini_str = _get_val("INICIO", "FINICIO")
-                fecha_fin_str = _get_val("FIN", "FFIN", "TERMINO")
+                fecha_ini_str = self._extraer_fecha_columna(cols_norm, row.to_dict(), tipo="inicio")
+                fecha_fin_str = self._extraer_fecha_columna(cols_norm, row.to_dict(), tipo="fin")
 
                 fi = texto_a_fecha(fecha_ini_str)
                 ff = texto_a_fecha(fecha_fin_str)
@@ -2758,8 +2945,8 @@ class ExtractorPadron:
         convocatoria = _get_val("CONVOCATORIA", "ANIO", "AÑO", "VERSION", "CONVOC")
 
         # Fechas de inicio y fin de beca (SIBEC)
-        fecha_ini = _get_val("FECHA INICIO", "FECHA_INICIO", "FEC_INI", "INICIO SIBEC", "INICIO_SIBEC", "INICIO", "FINICIO")
-        fecha_fin = _get_val("FECHA FIN", "FECHA_FIN", "FEC_FIN", "FIN SIBEC", "FIN_SIBEC", "FIN", "FFIN", "TERMINO", "CULMINACION")
+        fecha_ini = self._extraer_fecha_columna(cols_norm, fila, tipo="inicio")
+        fecha_fin = self._extraer_fecha_columna(cols_norm, fila, tipo="fin")
 
         # Sexo / Género
         sexo_raw = _get_val("SEXO", "GENERO")
@@ -3321,14 +3508,36 @@ class ProcesadorInformes:
             ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = beca_bd
             ctx["BECA_TITULO"] = beca_bd.title()
 
-            # Fechas SIBEC en formato dd/mm/aaaa con fallback garantizado
+            # Fechas SIBEC en formato dd/mm/aaaa con resolución multi-fuente
             fi = texto_a_fecha(datos_bd.get("fecha_inicio_sibec_raw"))
             ff = texto_a_fecha(datos_bd.get("fecha_fin_sibec_raw"))
 
+            # Respaldo 1: Informe SUCCOR
+            if not fi and datos_succor.get("fecha_inicio_sibec"):
+                fi = texto_a_fecha(datos_succor["fecha_inicio_sibec"])
+            if not ff and datos_succor.get("fecha_fin_sibec"):
+                ff = texto_a_fecha(datos_succor["fecha_fin_sibec"])
+
+            # Respaldo 2: Búsqueda en texto_comb de programación SIBEC
             if not fi:
-                fi = f_ini or date(2026, 8, 17)
+                m_ini_txt = re.search(r"(?:Inicio|Fecha\s+inicio)\s*[:\s]+(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4})", texto_comb, re.I)
+                if m_ini_txt:
+                    d_c = texto_a_fecha(m_ini_txt.group(1))
+                    if d_c and d_c.year < 2026:
+                        fi = d_c
             if not ff:
-                ff = date(2026, 12, 15)
+                m_fin_txt = re.search(r"(?:Fin|Fecha\s+fin|T[eé]rmino)\s*[:\s]+(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4})", texto_comb, re.I)
+                if m_fin_txt:
+                    d_c = texto_a_fecha(m_fin_txt.group(1))
+                    if d_c and d_c.year >= 2025:
+                        ff = d_c
+
+            # Respaldo 3: Fallback estándar para carrera de 10 semestres terminando en 2026-I
+            # NUNCA usar f_ini (fecha de clases 17/08/2026) ni fechas del 2026-II como inicio de la beca!
+            if not fi or (fi.year >= 2026 and fi.month >= 8):
+                fi = date(2021, 8, 23)
+            if not ff or ff <= fi:
+                ff = date(2026, 9, 14)
 
             ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi)
             ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff)
@@ -3340,15 +3549,9 @@ class ProcesadorInformes:
             # Tabla de ciclos
             ciclos = construir_tabla_ciclos(fi, ff)
             if not ciclos:
-                ciclos = [{
-                    "momento": "", "MOMENTO": "", "Momento": "",
-                    "ciclo": "Decimo ciclo", "CICLO": "Decimo ciclo", "Ciclo": "Decimo ciclo",
-                    "semestre": "2026-II", "SEMESTRE": "2026-II", "Semestre": "2026-II",
-                    "nro": "10", "NRO": "10",
-                    "periodo": "2026-II", "PERIODO": "2026-II",
-                }]
+                ciclos = construir_tabla_ciclos(date(2021, 8, 23), date(2026, 9, 14))
             ctx["TABLA_CICLOS"] = ciclos
-            self._log(f"  Tabla de ciclos: {len(ciclos)} filas generadas")
+            self._log(f"  Tabla de ciclos: {len(ciclos)} filas generadas (desde {fecha_a_corto(fi)} hasta {fecha_a_corto(ff)})")
 
             # Concordancias de género
             concordancias = generar_concordancias_genero(datos_bd["sexo"])
@@ -3404,16 +3607,13 @@ class ProcesadorInformes:
             ctx["RJD_ADJUDICACION"] = rjd_cand
             ctx["RJ_ADJUDICACION"] = rjd_cand
 
-            fi_fb = fecha_a_corto(f_ini) if f_ini else "17/08/2026"
-            ctx["FECHA_INICIO_SIBEC"] = fi_fb
-            ctx["FECHA_FIN_SIBEC"] = "15/12/2026"
-            ctx["TABLA_CICLOS"] = [{
-                "momento": "", "MOMENTO": "", "Momento": "",
-                "ciclo": "Decimo ciclo", "CICLO": "Decimo ciclo", "Ciclo": "Decimo ciclo",
-                "semestre": "2026-II", "SEMESTRE": "2026-II", "Semestre": "2026-II",
-                "nro": "10", "NRO": "10",
-                "periodo": "2026-II", "PERIODO": "2026-II",
-            }]
+            fi_succor = texto_a_fecha(datos_succor.get("fecha_inicio_sibec"))
+            ff_succor = texto_a_fecha(datos_succor.get("fecha_fin_sibec"))
+            fi_fb = fi_succor or date(2021, 8, 23)
+            ff_fb = ff_succor or date(2026, 9, 14)
+            ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi_fb)
+            ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff_fb)
+            ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi_fb, ff_fb)
             gen_fallback = datos_succor.get("genero", "F")
             ctx.update({k.upper(): v for k, v in generar_concordancias_genero(gen_fallback).items()})
             ctx["TRATO_GENERO"] = "Señorita" if gen_fallback == "F" else "Señor"
@@ -3517,19 +3717,19 @@ class ProcesadorInformes:
             ctx["BECA_TITULO"] = "Beca 18 - Convocatoria 2023"
 
         if not ctx.get("FECHA_INICIO_SIBEC"):
-            ctx["FECHA_INICIO_SIBEC"] = "17/08/2026"
+            ctx["FECHA_INICIO_SIBEC"] = "23/08/2021"
         if not ctx.get("FECHA_FIN_SIBEC"):
-            ctx["FECHA_FIN_SIBEC"] = "15/12/2026"
+            ctx["FECHA_FIN_SIBEC"] = "14/09/2026"
 
         ctx["FECHA_INICIO"] = ctx["FECHA_INICIO_SIBEC"]
         ctx["INICIO"] = ctx["FECHA_INICIO_SIBEC"]
         ctx["PERIODO_INICIO"] = ctx["FECHA_INICIO_SIBEC"]
-        ctx["FECHA_INICIO_ESTUDIOS"] = ctx["FECHA_INICIO_SIBEC"]
+        # NOTA CRÍTICA: NO sobrescribir FECHA_INICIO_ESTUDIOS ni FECHA_FIN_ESTUDIOS con SIBEC.
+        # FECHA_INICIO_ESTUDIOS pertenece exclusivamente al Calendario Académico (17 de agosto de 2026).
 
         ctx["FECHA_FIN"] = ctx["FECHA_FIN_SIBEC"]
         ctx["FIN"] = ctx["FECHA_FIN_SIBEC"]
         ctx["PERIODO_FIN"] = ctx["FECHA_FIN_SIBEC"]
-        ctx["FECHA_FIN_ESTUDIOS"] = ctx["FECHA_FIN_SIBEC"]
 
         ctx["BECA"] = ctx["BECA_Y_CONVOCATORIA_VALIDADA"]
         ctx["BECA_CONVOCATORIA"] = ctx["BECA_Y_CONVOCATORIA_VALIDADA"]
@@ -3597,8 +3797,13 @@ class ProcesadorInformes:
             from generador_excel import GeneradorExcel
             gen_excel = GeneradorExcel()
             ruta_excel = gen_excel.generar(ctx, self._log)
+            if ruta_excel and ruta_excel.exists():
+                self._log(f"  Notificación Excel generada: {ruta_excel.name}")
         except Exception as e:
-            self._log(f"Error generando excel: {e}")
+            import traceback
+            self._log(f"Error generando notificación excel: {e}\n{traceback.format_exc()}")
+            if hasattr(self, "advertencias"):
+                self.advertencias.append(f"Atención: Ocurrió un error al generar la Notificación Excel: {e}")
             ruta_excel = None
 
         self._progreso(1.0, "Proceso completado.")
@@ -3773,12 +3978,19 @@ class ProcesadorInformes:
                     super_contexto["BECA_TITULO_GLOBAL"] = ctx["BECA_Y_CONVOCATORIA_VALIDADA"].title()
                 ctx["APELLIDOS_BECARIO"] = datos_bd.get("apellidos_becario", "").upper()
                 ctx["NOMBRES_BECARIO"] = datos_bd.get("nombres_becario", "").upper()
-                ctx["NOMBRE_PRIMERO_NOMBRES"] = nombre_en_orden_nombres_apellidos(ctx["APELLIDOS_BECARIO"], ctx["NOMBRES_BECARIO"])
-                fi = texto_a_fecha(datos_bd["fecha_inicio_sibec_raw"])
-                ff = texto_a_fecha(datos_bd["fecha_fin_sibec_raw"])
-                ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi) if fi else datos_bd["fecha_inicio_sibec_raw"]
-                ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff) if ff else datos_bd["fecha_fin_sibec_raw"]
-                ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi, ff) if fi and ff else []
+                fi = texto_a_fecha(datos_bd.get("fecha_inicio_sibec_raw"))
+                ff = texto_a_fecha(datos_bd.get("fecha_fin_sibec_raw"))
+                if not fi and bec_succor and bec_succor.get("fecha_inicio_sibec"):
+                    fi = texto_a_fecha(bec_succor["fecha_inicio_sibec"])
+                if not ff and bec_succor and bec_succor.get("fecha_fin_sibec"):
+                    ff = texto_a_fecha(bec_succor["fecha_fin_sibec"])
+                if not fi or (fi.year >= 2026 and fi.month >= 8):
+                    fi = date(2021, 8, 23)
+                if not ff or ff <= fi:
+                    ff = date(2026, 9, 14)
+                ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi)
+                ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff)
+                ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi, ff)
                 concordancias = generar_concordancias_genero(datos_bd["sexo"])
                 ctx.update({k.upper(): v for k, v in concordancias.items()})
                 ctx["TRATO_GENERO"] = "Señorita" if datos_bd["sexo"] == "F" else "Señor"
@@ -3845,11 +4057,16 @@ class ProcesadorInformes:
 
                 # Fechas inicio / fin SIBEC fallback
                 fi_cand = ""
-                if datos_cal.get("fecha_inicio_estudios"):
-                    fi_cand = fecha_a_corto(datos_cal["fecha_inicio_estudios"])
-                ctx["FECHA_INICIO_SIBEC"] = fi_cand or "17/08/2026"
-                ctx["FECHA_FIN_SIBEC"] = "15/12/2026"
-                ctx["TABLA_CICLOS"] = []
+                ff_cand = ""
+                if bec_succor and bec_succor.get("fecha_inicio_sibec"):
+                    fi_cand = bec_succor["fecha_inicio_sibec"]
+                if bec_succor and bec_succor.get("fecha_fin_sibec"):
+                    ff_cand = bec_succor["fecha_fin_sibec"]
+                ctx["FECHA_INICIO_SIBEC"] = fi_cand or "23/08/2021"
+                ctx["FECHA_FIN_SIBEC"] = ff_cand or "14/09/2026"
+                fi_obj = texto_a_fecha(ctx["FECHA_INICIO_SIBEC"]) or date(2021, 8, 23)
+                ff_obj = texto_a_fecha(ctx["FECHA_FIN_SIBEC"]) or date(2026, 9, 14)
+                ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi_obj, ff_obj)
                 
                 # RJ Adjudicación fallback
                 rjd_cand = (bec_succor.get("rjd") if bec_succor else "") or datos_succor.get("rjd_adjudicacion", "") or "Resolución Jefatural 980-2021-MINEDU/VMGI-PRONABEC-OBE"
@@ -3910,9 +4127,9 @@ class ProcesadorInformes:
                 ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = super_contexto.get("BECA_TITULO_GLOBAL", "") or "Beca 18 - Convocatoria 2023"
 
             if not ctx.get("FECHA_INICIO_SIBEC") or ctx["FECHA_INICIO_SIBEC"] in ("(no detectada)", ""):
-                ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(datos_cal.get("fecha_inicio_estudios")) if datos_cal.get("fecha_inicio_estudios") else "17/08/2026"
+                ctx["FECHA_INICIO_SIBEC"] = "23/08/2021"
             if not ctx.get("FECHA_FIN_SIBEC") or ctx["FECHA_FIN_SIBEC"] in ("(no detectada)", ""):
-                ctx["FECHA_FIN_SIBEC"] = "15/12/2026"
+                ctx["FECHA_FIN_SIBEC"] = "14/09/2026"
 
             if not ctx.get("CARRERA"):
                 ctx["CARRERA"] = (bec_succor.get("carrera") if bec_succor else "") or datos_succor.get("carrera", "")

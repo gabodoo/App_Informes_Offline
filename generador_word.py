@@ -771,11 +771,11 @@ class GeneradorWord:
             ],
             "FECHA_INICIO_SIBEC": [
                 "INICIO_SIBEC", "FECHA_INICIO", "F_INICIO", "INICIO_BECA",
-                "PERIODO_INICIO", "FECHA_INICIO_ESTUDIOS", "INICIO"
+                "PERIODO_INICIO", "INICIO"
             ],
             "FECHA_FIN_SIBEC": [
                 "FIN_SIBEC", "FECHA_FIN", "F_FIN", "FIN_BECA",
-                "PERIODO_FIN", "FECHA_FIN_ESTUDIOS", "FIN"
+                "PERIODO_FIN", "FIN"
             ],
             "FECHA_SOLICITUD_TEXTO": [
                 "FECHA_SOLICITUD", "FECHA_SOL", "FECHA_INGRESO", "FECHA_REGISTRO"
@@ -809,7 +809,10 @@ class GeneradorWord:
                 "MATRICULA", "FECHA_DE_MATRICULA"
             ],
             "FECHA_INICIO_ESTUDIOS": [
-                "INICIO_ESTUDIOS", "FECHA_INICIO_CLASES"
+                "INICIO_ESTUDIOS", "FECHA_INICIO_CLASES", "FECHA_CLASES_INICIO"
+            ],
+            "FECHA_FIN_ESTUDIOS": [
+                "FIN_ESTUDIOS", "FECHA_FIN_CLASES", "FECHA_CLASES_FIN"
             ],
             "ESTADO_PROCEDENCIA": [
                 "PROCEDENCIA", "EVALUACION_PROCEDENCIA", "PROCEDENTE_OBSERVADO"
@@ -1422,9 +1425,9 @@ class GeneradorWord:
                         for c_idx, cell in enumerate(row.cells):
                             hdr = t.rows[0].cells[c_idx].text.upper() if c_idx < len(t.rows[0].cells) else ""
                             if "INICIO" in hdr and (not cell.text.strip() or "{{" in cell.text):
-                                cell.text = str(contexto.get("FECHA_INICIO_SIBEC") or contexto.get("FECHA_INICIO") or "17/08/2026")
+                                cell.text = str(contexto.get("FECHA_INICIO_SIBEC") or contexto.get("FECHA_INICIO") or "23/08/2021")
                             elif "FIN" in hdr and (not cell.text.strip() or "{{" in cell.text):
-                                cell.text = str(contexto.get("FECHA_FIN_SIBEC") or contexto.get("FECHA_FIN") or "15/12/2026")
+                                cell.text = str(contexto.get("FECHA_FIN_SIBEC") or contexto.get("FECHA_FIN") or "14/09/2026")
 
         # 7. Asegurar que nunca quede 'Pontificia Universidad' sin 'Católica del Perú' en ningún párrafo o tabla
         patron_pucp_incompleto = re.compile(r'\bPontificia\s+Universidad\b(?!\s+Cat[oó]lica\s+del\s+Per[uú])', re.IGNORECASE)
@@ -1692,19 +1695,18 @@ class GeneradorWord:
             if not b_exp.get("BECA_Y_CONVOCATORIA_VALIDADA"):
                 b_exp["BECA_Y_CONVOCATORIA_VALIDADA"] = super_contexto.get("BECA_TITULO_GLOBAL", "Beca 18 - Convocatoria 2023")
                 
-            # Fechas de inicio y fin (SIBEC / Periodo actual)
-            f_ini = b_exp.get("FECHA_INICIO_SIBEC") or b_exp.get("FECHA_INICIO") or b_exp.get("INICIO") or "17/08/2026"
-            f_fin = b_exp.get("FECHA_FIN_SIBEC") or b_exp.get("FECHA_FIN") or b_exp.get("FIN") or "15/12/2026"
+            # Fechas de inicio y fin (SIBEC / Periodo de la beca)
+            f_ini = b_exp.get("FECHA_INICIO_SIBEC") or b_exp.get("FECHA_INICIO") or b_exp.get("INICIO") or "23/08/2021"
+            f_fin = b_exp.get("FECHA_FIN_SIBEC") or b_exp.get("FECHA_FIN") or b_exp.get("FIN") or "14/09/2026"
             b_exp["FECHA_INICIO_SIBEC"] = f_ini
             b_exp["FECHA_INICIO"] = f_ini
             b_exp["INICIO"] = f_ini
             b_exp["PERIODO_INICIO"] = f_ini
-            b_exp["FECHA_INICIO_ESTUDIOS"] = f_ini
+            # NO sobrescribir FECHA_INICIO_ESTUDIOS ni FECHA_FIN_ESTUDIOS (calendario académico)
             b_exp["FECHA_FIN_SIBEC"] = f_fin
             b_exp["FECHA_FIN"] = f_fin
             b_exp["FIN"] = f_fin
             b_exp["PERIODO_FIN"] = f_fin
-            b_exp["FECHA_FIN_ESTUDIOS"] = f_fin
 
             b_exp["BECA_Y_CONVOCATORIA"] = b_exp["BECA_Y_CONVOCATORIA_VALIDADA"]
             b_exp["BECA"] = b_exp["BECA_Y_CONVOCATORIA_VALIDADA"]
@@ -2234,7 +2236,7 @@ class GeneradorWord:
                     if len(row.cells) > 3:
                         c3_txt = row.cells[3].text.strip()
                         if not c3_txt or "{{" in c3_txt:
-                            f_ini = b_data.get("FECHA_INICIO_SIBEC") or b_data.get("FECHA_INICIO") or b_data.get("INICIO") or "17/08/2026"
+                            f_ini = b_data.get("FECHA_INICIO_SIBEC") or b_data.get("FECHA_INICIO") or b_data.get("INICIO") or "23/08/2021"
                             row.cells[3].text = f_ini
                             for p in row.cells[3].paragraphs:
                                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -2247,7 +2249,7 @@ class GeneradorWord:
                     if len(row.cells) > 4:
                         c4_txt = row.cells[4].text.strip()
                         if not c4_txt or "{{" in c4_txt:
-                            f_fin = b_data.get("FECHA_FIN_SIBEC") or b_data.get("FECHA_FIN") or b_data.get("FIN") or "15/12/2026"
+                            f_fin = b_data.get("FECHA_FIN_SIBEC") or b_data.get("FECHA_FIN") or b_data.get("FIN") or "14/09/2026"
                             row.cells[4].text = f_fin
                             for p in row.cells[4].paragraphs:
                                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
