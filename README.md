@@ -1,6 +1,6 @@
-# Sigedo Lima - Generador de Informes Offline
+# Wolgang - Generador de Informes Offline
 
-Aplicación de escritorio para la generación de informes técnicos, oficios y notificaciones oficiales (Individual y Múltiple) para PRONABEC - Macro Región Lima.
+Aplicación de escritorio para la generación de informes
 
 ---
 
