@@ -15,16 +15,22 @@ App_Informes_Offline/
 │   ├── plantilla_notificacion.xlsx
 │   ├── plantilla_notificacion_casilla.xlsx
 │   ├── plantilla_notificacion_multiple.xlsx
-│   └── plantilla_notificacion_casilla_multiple.xlsx
+│   ├── plantilla_notificacion_casilla_multiple.xlsx
+│   ├── Plantilla_Informe_suspendido_realizando_estudios.docx
+│   └── Plantilla _Actualizacion_suspendido_realizando_estudios.xlsx
 ├── Informes_Generados/         # Carpeta donde se guardan los archivos generados
 ├── main.py                     # Punto de entrada principal
 ├── gui.py                      # Interfaz gráfica (CustomTkinter)
-├── procesador.py               # Lógica de extracción, validación y procesamiento
-├── generador_word.py           # Generador de informes Word (docxtpl)
-├── generador_excel.py          # Generador de notificaciones Excel (openpyxl)
+├── procesador.py               # Lógica de Ampliaciones (Individual y Múltiple)
+├── procesador_actualizacion.py # Lógica de Actualización (De suspendido a regular)
+├── generador_word.py           # Generador de informes Word para Ampliaciones
+├── generador_word_actualizacion.py # Generador de informes Word para Actualización
+├── generador_excel.py          # Generador de notificaciones Excel para Ampliaciones
+├── generador_excel_actualizacion.py # Generador de resoluciones Excel para Actualización
 ├── generador_oficio.py         # Generador de oficios Word (python-docx)
 ├── requirements.txt            # Dependencias del proyecto
-└── generar_ejecutable.bat      # Script para compilar el ejecutable portable
+├── generar_ejecutable.bat      # Script para compilar el ejecutable portable
+└── subir_a_github.bat          # Script para sincronizar cambios con GitHub
 ```
 
 ---

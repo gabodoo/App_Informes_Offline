@@ -12,6 +12,7 @@ ENV/
 build/
 dist/
 *.spec
+!main.spec
 
 # Documentos generados y pruebas (No subir datos sensibles)
 Informes_Generados/

@@ -759,7 +759,8 @@ class GeneradorWord:
                 "NOMBRES_Y_APELLIDOS", "NOMBRE_Y_APELLIDOS", "APELLIDOS_Y_NOMBRES",
                 "NOMBRE_BECARIO", "NOMBRE_BECARIA", "NOMBRE_ESTUDIANTE", "BECARIO",
                 "BECARIA", "ESTUDIANTE", "ALUMNO", "ALUMNA", "NOMBRES", "APELLIDOS",
-                "NOMBRE_COMPLETO", "DATOS_BECARIO", "BENEFICIARIO", "POSTULANTE"
+                "NOMBRE_COMPLETO", "DATOS_BECARIO", "BENEFICIARIO", "POSTULANTE",
+                "BECARIO_A", "BECARIO/A", "NOMBRE", "DATOS_ESTUDIANTE"
             ],
             "DNI_VALIDADO": [
                 "DNI", "DNI_BECARIO", "NUMERO_DNI", "NRO_DNI", "DOCUMENTO",
@@ -832,8 +833,17 @@ class GeneradorWord:
             "TABLA_CICLOS": [
                 "CICLOS", "tabla_ciclos", "ciclos", "TABLA_DE_CICLOS"
             ],
+            "SEXO_ARTICULO_1": [
+                "ARTICULO_1", "UN_O_UNA_BECARIO", "UN_UNA_BECARIO_A", "SEXO_ARTICULO"
+            ],
+            "DE_UN_A_BECARIO_A": [
+                "DE_UNA_BECARIA", "DE_UN_BECARIO", "DE_UN_A_BECARIO", "DE_UN_O_UNA_BECARIO"
+            ],
+            "SEXO_BECARIO_A": [
+                "BECARIO_O_BECARIA", "SOLO_BECARIO_A", "TIPO_BECARIO"
+            ],
             "EL_LA_BECARIO_A": [
-                "SEXO_ARTICULO_2", "SEXO_BECARIO_A"
+                "SEXO_ARTICULO_2"
             ],
             "DEL_BECARIO_A": [
                 "DEL_BECARIO", "DE_LA_BECARIA"
@@ -960,6 +970,14 @@ class GeneradorWord:
                     (f"{{{n}}}", valor),
                 ])
 
+        # Variantes específicas para marcadores con barras o combinados que Jinja2 no procesa
+        val_nom_pat = str(contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or contexto.get("NOMBRE_PRIMERO_NOMBRES") or "")
+        if val_nom_pat:
+            for b_tag in ("BECARIO/A", "BECARIO / A", "BECARIO_A", "BECARIO(A)", "DATOS_BECARIO"):
+                for tag_fmt in (f"{{{{{b_tag}}}}}", f"{{{{ {b_tag} }}}}", f"[{b_tag}]", f"<{b_tag}>", f"${{{b_tag}}}", f"{{{b_tag}}}"):
+                    patrones_reemplazo.append((tag_fmt, val_nom_pat))
+                    patrones_reemplazo.append((tag_fmt.lower(), val_nom_pat))
+
         # Mapeo de reemplazos estáticos de resguardo (para plantillas antiguas sin etiquetas)
         reemplazos_fallback = []
         if contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS"):
@@ -1013,12 +1031,36 @@ class GeneradorWord:
                 ("BECA 18 - CONVOCATORIA 2021", val_beca.upper()),
             ])
             
-            val_sexo = str(contexto.get("SEXO_ARTICULO_1", "1 becario/a"))
+            sexo_str = str(contexto.get("SEXO") or contexto.get("GENERO") or "").strip().upper()
+            es_fem = sexo_str.startswith("F") or sexo_str in ("2", "MUJER", "FEMENINO")
+            if not sexo_str:
+                art1 = str(contexto.get("SEXO_ARTICULO_1") or "").lower()
+                art2 = str(contexto.get("EL_LA_BECARIO_A") or contexto.get("SEXO_ARTICULO_2") or "").lower()
+                es_fem = "becaria" in art1 or "becaria" in art2 or "la " in art2 or "señorita" in str(contexto.get("TRATO_GENERO") or "").lower()
+
+            val_de_sexo = "de una (1) becaria" if es_fem else "de un (1) becario"
+            val_art_sexo = "una (1) becaria" if es_fem else "un (1) becario"
             val_beca_titulo = str(contexto.get("BECA_TITULO", val_beca))
             
             reemplazos_fallback.extend([
-                ("1 becaria de la Beca 18 - Convocatoria 2021", f"{val_sexo} de la {val_beca_titulo}"),
-                ("1 becario de la Beca 18 - Convocatoria 2021", f"{val_sexo} de la {val_beca_titulo}"),
+                ("1 becaria de la Beca 18 - Convocatoria 2021", f"{val_art_sexo} de la {val_beca_titulo}"),
+                ("1 becario de la Beca 18 - Convocatoria 2021", f"{val_art_sexo} de la {val_beca_titulo}"),
+                ("1 la becaria de la Beca 18 - Convocatoria 2021", f"{val_art_sexo} de la {val_beca_titulo}"),
+                ("1 el becario de la Beca 18 - Convocatoria 2021", f"{val_art_sexo} de la {val_beca_titulo}"),
+                ("de 1 la becaria de la Beca 18 - Convocatoria 2021", f"{val_de_sexo} de la {val_beca_titulo}"),
+                ("de 1 el becario de la Beca 18 - Convocatoria 2021", f"{val_de_sexo} de la {val_beca_titulo}"),
+                ("de 1 la becaria", val_de_sexo),
+                ("de 1 el becario", val_de_sexo),
+                ("de 1 la becario", val_de_sexo),
+                ("de 1 el becaria", val_de_sexo),
+                ("de 1 becaria", val_de_sexo),
+                ("de 1 becario", val_de_sexo),
+                ("1 la becaria", val_art_sexo),
+                ("1 el becario", val_art_sexo),
+                ("1 la becario", val_art_sexo),
+                ("1 el becaria", val_art_sexo),
+                ("1 becaria", val_art_sexo),
+                ("1 becario", val_art_sexo),
             ])
         val_fsol = str(contexto.get("FECHA_SOLICITUD_TEXTO") or "").strip()
         if val_fsol and val_fsol != "(no detectada)":
@@ -1058,6 +1100,9 @@ class GeneradorWord:
             for old_val, new_val in reemplazos_fallback:
                 if old_val in texto_nuevo:
                     texto_nuevo = texto_nuevo.replace(old_val, new_val)
+            # Limpieza inmediata de pronombres incorrectos a nivel de run
+            texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, texto_nuevo, flags=re.IGNORECASE)
+            texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)?becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.IGNORECASE)
             if val_succor_clean:
                 patron_succor_generico = re.compile(
                     r"(?:INFORME|Informe)(?:\s+(?:T[EÉ]CNICO|LEGAL|FINAL))?\s*(?:N[°ºo\.\s]*|NRO\.?|N[UÚ]MERO|NUMERO|N\.º|N\.°|N°:|N°\s*:)?\s*[\d]+[-\s\w/\.]*(?:SUCCOR[-\s\w]*LIMA|SUCCOR[-\s\w]*|DICONCI[-\s\w]*SUCCOR)",
@@ -1075,10 +1120,22 @@ class GeneradorWord:
                 return
             nro_inf_gen = contexto.get("NUMERO_INFORME_GENERAR", "")
             
+            # Normalizar texto para detección confiable (ignora \xa0, saltos de línea y espacios múltiples)
+            txt_p_norm = re.sub(r"[\s\u00a0]+", " ", p.text).strip() if p.text else ""
+            
+            es_numeral_21 = bool(
+                re.search(r"(?:^|[\s\.\b])2\.1[\.\s]", txt_p_norm) or
+                ("traslada la solicitud" in txt_p_norm and ("conforme al siguiente detalle" in txt_p_norm or "ampliación excepcional" in txt_p_norm)) or
+                ("Subdirección de Coordinación" in txt_p_norm and "traslada la solicitud" in txt_p_norm) or
+                ("semestre 2026-II" in txt_p_norm and "conforme al siguiente detalle" in txt_p_norm)
+            )
+
             # Primero intentar reemplazo a nivel de run (preserva formato de cada run)
-            texto_pre = p.text
             for run in p.runs:
                 _reemplazar_texto_run(run, patrones_reemplazo, reemplazos_fallback, nro_inf_gen)
+                if es_numeral_21:
+                    if "BECA" in run.text:
+                        run.text = re.sub(r"\bBECA\s+(\d+|[A-Za-záéíóúÁÉÍÓÚ]+)\b", r"Beca \1", run.text)
 
             # Reemplazos y rescates a nivel de párrafo si quedaron huecos o etiquetas
             texto_orig = p.text
@@ -1128,27 +1185,50 @@ class GeneradorWord:
                 )
             if nro_inf_gen:
                 texto_nuevo = re.sub(r"(INFORME\s+N[º°o]?\s*)\d+(-\d{4}-MINEDU/VMGI-PRONABEC-DIBEC-SUS)", rf"\g<1>{nro_inf_gen}\g<2>", texto_nuevo, flags=re.IGNORECASE)
-            
+
+            # Limpieza contra residuo numérico '67' en párrafos del cuerpo (Asunto, numeral 2.1, etc.)
+            val_beca_limpia = str(contexto.get("BECA_TITULO") or contexto.get("BECA_Y_CONVOCATORIA_VALIDADA") or "Beca 18 - Convocatoria 2021")
+            if val_beca_limpia in ("67", "") or val_beca_limpia.isdigit():
+                val_beca_limpia = "Beca 18 - Convocatoria 2021"
+            if es_numeral_21:
+                val_beca_limpia = re.sub(r"\bBECA\s+(\d+|[A-Za-záéíóúÁÉÍÓÚ]+)\b", r"Beca \1", val_beca_limpia)
+
+            texto_nuevo = re.sub(r"\b(?:de\s+la|de\s+el)\s+67\b", f"de la {val_beca_limpia}", texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\b(?:de\s+1\s+(?:el\s+|la\s+)?becari[oa]\s+de\s+la)\s+67\b", f"{val_de_sexo} de la {val_beca_limpia}", texto_nuevo, flags=re.I)
+
+            # Corrección gramatical y de concordancia en cualquier párrafo:
+            # Eliminar pronombre 'la' / 'el' después de 1 y colocar 'una (1)' / 'un (1)'
+            texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\b1\s+becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+
+            # Ajuste solicitado: en el numeral 2.1 debe decir 'de una (1) becaria' (o 'de un (1) becario')
+            # y 'Beca 18' (Primera letra mayúscula, lo demás minúscula), exclusivamente en 2.1
+            if es_numeral_21:
+                texto_nuevo = re.sub(r"\bBECA\s+(\d+|[A-Za-záéíóúÁÉÍÓÚ]+)\b", r"Beca \1", texto_nuevo)
+                texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)?becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\bde\s+la\s+becaria\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\bdel\s+becario\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", texto_nuevo, flags=re.I)
+
             if texto_nuevo != texto_orig:
                 # Guardar formato del primer run antes de sobrescribir
                 fmt_guardado = {}
                 if p.runs:
                     r0 = p.runs[0]
                     fmt_guardado = {
-                        "name": r0.font.name,
-                        "size": r0.font.size,
+                        "name": r0.font.name or "Arial",
+                        "size": r0.font.size or Pt(11),
                         "bold": r0.bold,
                         "italic": r0.italic,
                         "underline": r0.underline,
                     }
                 p.text = texto_nuevo
                 # Restaurar formato al nuevo run para mantener Arial 11
-                if p.runs and fmt_guardado:
+                if p.runs:
                     r = p.runs[0]
-                    if fmt_guardado.get("name"):
-                        r.font.name = fmt_guardado["name"]
-                    if fmt_guardado.get("size"):
-                        r.font.size = fmt_guardado["size"]
+                    r.font.name = fmt_guardado.get("name") or "Arial"
+                    r.font.size = fmt_guardado.get("size") or Pt(11)
                     if fmt_guardado.get("bold") is not None:
                         r.bold = fmt_guardado["bold"]
                     if fmt_guardado.get("italic") is not None:
@@ -1331,14 +1411,16 @@ class GeneradorWord:
                 if len(table.rows) > 2 and any(w in table.rows[1].cells[0].text.upper() for w in ("DNI", "N°", "ITEM", "BECARIO", "APELLIDOS")):
                     start_row_idx = 2
 
-                val_nom_ord = str(contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or contexto.get("NOMBRE_PRIMERO_NOMBRES") or "").strip().upper()
+                val_nom_ord = str(contexto.get("NOMBRES_Y_APELLIDOS_VALIDADOS") or contexto.get("NOMBRE_PRIMERO_NOMBRES") or contexto.get("DESTINATARIO") or contexto.get("DATOS_BECARIO") or contexto.get("BECARIO") or "").strip().upper()
                 if "," in val_nom_ord:
                     p = [x.strip() for x in val_nom_ord.split(",", 1)]
                     val_nom_ord = f"{p[1]} {p[0]}".strip().upper()
 
                 val_dni = str(contexto.get("DNI_VALIDADO") or "").strip()
                 val_rjd = str(contexto.get("RJD_ADJUDICACION") or contexto.get("RJ_ADJUDICACION") or "").strip()
-                val_beca = str(contexto.get("BECA_Y_CONVOCATORIA_VALIDADA") or contexto.get("BECA_TITULO") or "Beca 18 - Convocatoria 2023").strip()
+                val_beca = str(contexto.get("BECA_Y_CONVOCATORIA_VALIDADA") or contexto.get("BECA_TITULO") or "Beca 18 - Convocatoria 2021").strip()
+                if val_beca == "67" or val_beca.isdigit():
+                    val_beca = "Beca 18 - Convocatoria 2021"
                 val_ies = str(contexto.get("INSTITUCION") or "Pontificia Universidad Católica del Perú").strip()
                 if not val_ies or re.search(r"^\s*Pontificia\s+Universidad(?:\s+Cat[oó]lica)?\s*$", val_ies, re.I) or ("Pontificia Universidad" in val_ies and "Católica del Perú" not in val_ies and "Catolica del Peru" not in val_ies):
                     val_ies = "Pontificia Universidad Católica del Perú"
@@ -1353,11 +1435,12 @@ class GeneradorWord:
                     
                     if "nombre" in col_map and col_map["nombre"] < len(row.cells):
                         c_cell = row.cells[col_map["nombre"]]
-                        if not c_cell.text.strip() or "{{" in c_cell.text:
-                            c_cell.text = val_nom_ord
-                        elif "," in c_cell.text:
-                            p = [x.strip() for x in c_cell.text.split(",", 1)]
-                            c_cell.text = f"{p[1]} {p[0]}".strip().upper()
+                        if val_nom_ord:
+                            if not c_cell.text.strip() or "{{" in c_cell.text or "BECARIO" in c_cell.text.upper() or "/" in c_cell.text or "LAIDY" in c_cell.text.upper():
+                                c_cell.text = val_nom_ord
+                            elif "," in c_cell.text:
+                                p = [x.strip() for x in c_cell.text.split(",", 1)]
+                                c_cell.text = f"{p[1]} {p[0]}".strip().upper()
 
                     if "rjd" in col_map and col_map["rjd"] < len(row.cells):
                         c_cell = row.cells[col_map["rjd"]]
@@ -1366,7 +1449,7 @@ class GeneradorWord:
 
                     if "beca" in col_map and col_map["beca"] < len(row.cells):
                         c_cell = row.cells[col_map["beca"]]
-                        if not c_cell.text.strip() or "{{" in c_cell.text or c_cell.text.strip() in ("-", "--"):
+                        if not c_cell.text.strip() or "{{" in c_cell.text or c_cell.text.strip() in ("-", "--", "67") or c_cell.text.strip().isdigit() or "BECA 18" in c_cell.text.upper():
                             c_cell.text = val_beca
 
                     if "institucion" in col_map and col_map["institucion"] < len(row.cells):
@@ -1486,6 +1569,33 @@ class GeneradorWord:
 
         # 11. Ajuste normativo por fecha de solicitud (RDE N° 067-2025 para <= 24 de julio de 2026)
         ajustar_normativa_informe_individual(doc, contexto, log=log)
+
+        # 12. Barrido final de seguridad para Numeral 2.1 y concordancias gramaticales
+        for p in doc.paragraphs:
+            if not p.text:
+                continue
+            txt_p = p.text
+            txt_norm = re.sub(r"[\s\u00a0]+", " ", txt_p).strip()
+            es_21 = bool(
+                re.search(r"(?:^|[\s\.\b])2\.1[\.\s]", txt_norm) or
+                ("traslada la solicitud" in txt_norm and ("conforme al siguiente detalle" in txt_norm or "ampliación excepcional" in txt_norm)) or
+                ("Subdirección de Coordinación" in txt_norm and "traslada la solicitud" in txt_norm) or
+                ("semestre 2026-II" in txt_norm and "conforme al siguiente detalle" in txt_norm)
+            )
+            txt_nuevo = txt_p
+            if re.search(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", txt_nuevo, re.I):
+                txt_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, txt_nuevo, flags=re.I)
+            if re.search(r"\b1\s+(?:la\s+|el\s+)?becari[oa]\b", txt_nuevo, re.I):
+                txt_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)?becari[oa]\b", val_art_sexo, txt_nuevo, flags=re.I)
+            if es_21:
+                txt_nuevo = re.sub(r"\bBECA\s+(\d+|[A-Za-záéíóúÁÉÍÓÚ]+)\b", r"Beca \1", txt_nuevo)
+                txt_nuevo = re.sub(r"\bde\s+la\s+becaria\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", txt_nuevo, flags=re.I)
+                txt_nuevo = re.sub(r"\bdel\s+becario\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", txt_nuevo, flags=re.I)
+            if txt_nuevo != txt_p:
+                p.text = txt_nuevo
+                if p.runs:
+                    p.runs[0].font.name = "Arial"
+                    p.runs[0].font.size = Pt(11)
 
         doc.save(ruta_docx)
 

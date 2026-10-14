@@ -39,6 +39,9 @@ echo ============================================
     --distpath "%DIR_PROYECTO%dist" ^
     --collect-all pandas ^
     --hidden-import procesador ^
+    --hidden-import procesador_actualizacion ^
+    --hidden-import generador_word_actualizacion ^
+    --hidden-import generador_excel_actualizacion ^
     --hidden-import gui ^
     --hidden-import generador_word ^
     --hidden-import generador_excel ^

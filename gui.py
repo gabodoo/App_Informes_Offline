@@ -43,7 +43,7 @@ class AppInformes(ctk.CTk):
         self.geometry(self.APP_SIZE)
         self.minsize(*self.MIN_SIZE)
 
-        # Variables Individual
+        # Variables Individual (Ampliaciones)
         self._nro_informe = tk.StringVar()
         self._ruta_excel = tk.StringVar()
         self._ruta_formato_autogenerado = tk.StringVar()
@@ -51,7 +51,7 @@ class AppInformes(ctk.CTk):
         self._ruta_calendario_academico = tk.StringVar()
         self._ruta_documento_ies = tk.StringVar()
 
-        # Variables Múltiple
+        # Variables Múltiple (Ampliaciones)
         self._nro_informe_mult = tk.StringVar()
         self._ruta_excel_mult = tk.StringVar()
         self._formatos_autogenerados_mult = [] # Lista de StringVars
@@ -61,7 +61,15 @@ class AppInformes(ctk.CTk):
         self._ruta_calendario_academico_mult = tk.StringVar()
         self._ruta_documento_ies_mult = tk.StringVar()
 
-        self._modo_actual = "actualizacion"
+        # Variables Actualización: De suspendido a regular
+        self._nro_informe_act = tk.StringVar()
+        self._ruta_excel_act = tk.StringVar()
+        self._ruta_informe_succor_act = tk.StringVar()
+        self._ruta_anexo_succor_act = tk.StringVar()
+        self._resoluciones_act = []
+
+        self._modo_actual = "suspendido_regular"
+        self._menu_actualizacion_abierto = True
         self._menu_ampliaciones_abierto = False
         self._procesando = False
 
@@ -80,19 +88,35 @@ class AppInformes(ctk.CTk):
         logo_lbl = ctk.CTkLabel(sidebar, text="PRONABEC", font=ctk.CTkFont(size=22, weight="bold"), text_color=self.COLOR_AZUL_OSCURO)
         logo_lbl.pack(pady=(20, 25), padx=20, anchor="w")
 
-        # 1. Opción principal: Actualización
+        # 1. Opción principal: Actualización (desplegable)
         self.btn_actualizacion = ctk.CTkButton(
             sidebar,
-            text="Actualización",
+            text="📁 Actualización  ▼",
             fg_color="transparent",
             text_color=self.COLOR_TEXTO_OSCURO,
             anchor="w",
             hover_color="#f0f0f0",
             font=ctk.CTkFont(size=14),
-            command=lambda: self._cambiar_modo("actualizacion")
+            command=self._toggle_menu_actualizacion
         )
         self.btn_actualizacion.pack(fill="x", pady=4, padx=10)
         self.btn_ecs = self.btn_actualizacion
+
+        # Contenedor para subopciones de Actualización (desglosable)
+        self.frame_submenu_actualizacion = ctk.CTkFrame(sidebar, fg_color="transparent")
+        self.frame_submenu_actualizacion.pack(fill="x", pady=(0, 5), padx=0)
+
+        self.btn_suspendido_regular = ctk.CTkButton(
+            self.frame_submenu_actualizacion,
+            text="    ✎ De suspendido a regular",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=13),
+            command=lambda: self._cambiar_modo("suspendido_regular")
+        )
+        self.btn_suspendido_regular.pack(fill="x", pady=2, padx=(10, 10))
 
         # 2. Opción principal: Ampliaciones (desplegable)
         self.btn_ampliaciones = ctk.CTkButton(
@@ -181,10 +205,11 @@ class AppInformes(ctk.CTk):
         self.frames["multiple"] = self._construir_vista_multiple(self.main_container)
         self.frames["multiple"].grid(row=0, column=0, sticky="nsew")
 
-        # Vista Actualización (pantalla en blanco)
-        self.frames["actualizacion"] = self._construir_vista_actualizacion(self.main_container)
-        self.frames["actualizacion"].grid(row=0, column=0, sticky="nsew")
-        self.frames["actualizacion_ecs"] = self.frames["actualizacion"]
+        # Vista Actualización: De suspendido a regular
+        self.frames["suspendido_regular"] = self._construir_vista_suspendido_regular(self.main_container)
+        self.frames["suspendido_regular"].grid(row=0, column=0, sticky="nsew")
+        self.frames["actualizacion"] = self.frames["suspendido_regular"]
+        self.frames["actualizacion_ecs"] = self.frames["suspendido_regular"]
 
         # --- Progreso y Log (Común) ---
         status_frame = ctk.CTkFrame(self.main_container, fg_color=self.COLOR_FONDO_BLANCO)
@@ -202,7 +227,28 @@ class AppInformes(ctk.CTk):
         self._log_text = ctk.CTkTextbox(status_frame, height=130, font=ctk.CTkFont(family="Consolas", size=12), border_width=1, border_color=self.COLOR_BORDE, fg_color="#fafafa", text_color="#333", corner_radius=0, state="disabled")
         self._log_text.grid(row=2, column=0, sticky="nsew")
 
-        self._cambiar_modo("actualizacion")
+        self._cambiar_modo("suspendido_regular")
+
+    def _toggle_menu_actualizacion(self, abrir: bool | None = None) -> None:
+        if abrir is None:
+            nuevo_estado = not self._menu_actualizacion_abierto
+        else:
+            nuevo_estado = abrir
+
+        if nuevo_estado:
+            if not self._menu_actualizacion_abierto:
+                if self._menu_ampliaciones_abierto:
+                    self._toggle_menu_ampliaciones(abrir=False)
+                self.frame_submenu_actualizacion.pack(after=self.btn_actualizacion, fill="x", pady=(0, 5), padx=0)
+                self._menu_actualizacion_abierto = True
+            self.btn_actualizacion.configure(text="📁 Actualización  ▼")
+            if self._modo_actual != "suspendido_regular":
+                self._cambiar_modo("suspendido_regular")
+        else:
+            if self._menu_actualizacion_abierto:
+                self.frame_submenu_actualizacion.pack_forget()
+                self._menu_actualizacion_abierto = False
+            self.btn_actualizacion.configure(text="📁 Actualización  ▶")
 
     def _toggle_menu_ampliaciones(self, abrir: bool | None = None) -> None:
         if abrir is None:
@@ -212,7 +258,9 @@ class AppInformes(ctk.CTk):
 
         if nuevo_estado:
             if not self._menu_ampliaciones_abierto:
-                self.frame_submenu_ampliaciones.pack(fill="x", pady=(0, 5), padx=0)
+                if self._menu_actualizacion_abierto:
+                    self._toggle_menu_actualizacion(abrir=False)
+                self.frame_submenu_ampliaciones.pack(after=self.btn_ampliaciones, fill="x", pady=(0, 5), padx=0)
                 self._menu_ampliaciones_abierto = True
             self.btn_ampliaciones.configure(text="📁 Ampliaciones  ▼")
             if self._modo_actual not in ("individual", "multiple"):
@@ -224,22 +272,26 @@ class AppInformes(ctk.CTk):
             self.btn_ampliaciones.configure(text="📁 Ampliaciones  ▶")
 
     def _cambiar_modo(self, modo: str) -> None:
-        if modo in ("actualizacion", "actualizacion_ecs"):
-            self._modo_actual = "actualizacion"
+        if modo in ("actualizacion", "actualizacion_ecs", "suspendido_regular"):
+            self._modo_actual = "suspendido_regular"
         else:
             self._modo_actual = modo
 
         # Resetear colores
         self.btn_actualizacion.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        self.btn_suspendido_regular.configure(text_color=self.COLOR_TEXTO_OSCURO)
         self.btn_ampliaciones.configure(text_color=self.COLOR_TEXTO_OSCURO)
         self.btn_individual.configure(text_color=self.COLOR_TEXTO_OSCURO)
         self.btn_multiple.configure(text_color=self.COLOR_TEXTO_OSCURO)
 
-        if self._modo_actual == "actualizacion":
-            self.btn_actualizacion.configure(text_color=self.COLOR_ROSA)
+        if self._modo_actual == "suspendido_regular":
+            if not self._menu_actualizacion_abierto:
+                self._toggle_menu_actualizacion(abrir=True)
+            self.btn_actualizacion.configure(text_color=self.COLOR_AZUL_OSCURO)
+            self.btn_suspendido_regular.configure(text_color=self.COLOR_ROSA)
             if not self._procesando:
                 self._btn_generar.configure(state="normal")
-            self._lbl_estado.configure(text="Módulo: Actualización")
+            self._lbl_estado.configure(text="Módulo: Actualización (De suspendido a regular)")
 
         elif self._modo_actual == "individual":
             if not self._menu_ampliaciones_abierto:
@@ -259,14 +311,83 @@ class AppInformes(ctk.CTk):
                 self._btn_generar.configure(state="normal")
             self._lbl_estado.configure(text="Estado: Listo (Modo Múltiple)")
 
-        target_mode = "actualizacion" if self._modo_actual == "actualizacion" else self._modo_actual
+        target_mode = self._modo_actual
         if target_mode in self.frames:
             self.frames[target_mode].tkraise()
 
-    def _construir_vista_actualizacion(self, parent) -> ctk.CTkFrame:
-        # Pantalla en blanco para Actualización
+    def _construir_vista_suspendido_regular(self, parent) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+
+        scrollable_frame = ctk.CTkScrollableFrame(
+            frame,
+            fg_color=self.COLOR_FONDO_BLANCO,
+            border_width=1,
+            border_color=self.COLOR_BORDE,
+            corner_radius=0
+        )
+        scrollable_frame.grid(row=0, column=0, sticky="nsew")
+        scrollable_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(scrollable_frame, text="Nro. Informe", font=ctk.CTkFont(size=13, weight="bold"), text_color=self.COLOR_TEXTO_OSCURO).grid(row=0, column=0, padx=15, pady=(20, 10), sticky="w")
+        nro_entry = ctk.CTkEntry(scrollable_frame, textvariable=self._nro_informe_act, placeholder_text="Ej: 6348", height=34, border_color=self.COLOR_BORDE, corner_radius=2, fg_color="#fcfcfc")
+        nro_entry.grid(row=0, column=1, sticky="w", padx=(0, 15), pady=(20, 10))
+
+        self._crear_fila_seleccion(scrollable_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel_act, comando=lambda: self._seleccionar_archivo(self._ruta_excel_act, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
+        self._crear_fila_seleccion(scrollable_frame, fila=2, etiqueta="Informe de la SUCCOR (.pdf)", variable=self._ruta_informe_succor_act, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor_act, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR del caso...")
+        self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Anexo de la SUCCOR (.xlsx)", variable=self._ruta_anexo_succor_act, comando=lambda: self._seleccionar_archivo(self._ruta_anexo_succor_act, "Anexo SUCCOR", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Anexo excel de la SUCCOR...")
+
+        # Sección dinámica para Resoluciones
+        separator = ctk.CTkFrame(scrollable_frame, height=2, fg_color=self.COLOR_BORDE)
+        separator.grid(row=4, column=0, columnspan=2, sticky="ew", padx=15, pady=20)
+
+        lbl_resoluciones = ctk.CTkLabel(scrollable_frame, text="Resoluciones en formato PDF", font=ctk.CTkFont(size=14, weight="bold"), text_color=self.COLOR_AZUL_OSCURO)
+        lbl_resoluciones.grid(row=5, column=0, columnspan=2, padx=15, pady=(0, 10), sticky="w")
+
+        self.frame_resoluciones_dinamico = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
+        self.frame_resoluciones_dinamico.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.frame_resoluciones_dinamico.grid_columnconfigure(1, weight=1)
+
+        btn_add_resolucion = ctk.CTkButton(scrollable_frame, text="+ Añadir Resolución", width=140, fg_color=self.COLOR_VERDE, hover_color="#219150", command=self._add_resolucion_act)
+        btn_add_resolucion.grid(row=7, column=0, padx=15, pady=10, sticky="w")
+
+        # Iniciar con 2 resoluciones por defecto
+        self._add_resolucion_act()
+        self._add_resolucion_act()
+
         return frame
+
+    def _add_resolucion_act(self):
+        if len(self._resoluciones_act) >= 15:
+            messagebox.showinfo("Límite", "El sistema admite un máximo de 15 resoluciones.")
+            return
+
+        idx = len(self._resoluciones_act)
+        var_ruta = tk.StringVar()
+        self._resoluciones_act.append(var_ruta)
+
+        fila = idx
+        etiqueta = ctk.CTkLabel(self.frame_resoluciones_dinamico, text=f"Resolución {idx+1}:", font=ctk.CTkFont(size=13, weight="bold"), text_color=self.COLOR_TEXTO_OSCURO)
+        etiqueta.grid(row=fila, column=0, padx=15, pady=5, sticky="w")
+
+        fila_controles = ctk.CTkFrame(self.frame_resoluciones_dinamico, fg_color="transparent")
+        fila_controles.grid(row=fila, column=1, padx=(0, 15), pady=5, sticky="ew")
+        fila_controles.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkEntry(
+            fila_controles,
+            textvariable=var_ruta,
+            placeholder_text="PDF de la resolución de suspensión...",
+            height=34, border_color=self.COLOR_BORDE, corner_radius=2, fg_color="#fcfcfc"
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            fila_controles,
+            text="Examinar", width=100, height=34,
+            command=lambda v=var_ruta: self._seleccionar_archivo(v, "Resolución (PDF)", [("PDF", "*.pdf"), ("Todos", "*.*")]),
+            fg_color="#f0f0f0", text_color=self.COLOR_TEXTO_OSCURO, hover_color="#e0e0e0", border_width=1, border_color=self.COLOR_BORDE, corner_radius=2
+        ).grid(row=0, column=1)
 
     def _construir_vista_individual(self, parent) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
@@ -544,6 +665,12 @@ class AppInformes(ctk.CTk):
             self._ruta_informe_succor.set("")
             self._ruta_calendario_academico.set("")
             self._ruta_documento_ies.set("")
+        elif self._modo_actual == "suspendido_regular":
+            self._nro_informe_act.set("")
+            self._ruta_informe_succor_act.set("")
+            self._ruta_anexo_succor_act.set("")
+            for v in self._resoluciones_act:
+                v.set("")
         else:
             self._nro_informe_mult.set("")
             for var in self._formatos_autogenerados_mult:
@@ -579,9 +706,29 @@ class AppInformes(ctk.CTk):
         self.after(0, _actualizar)
 
     def _validar_entradas(self) -> bool:
-        if self._modo_actual not in ("individual", "multiple"):
-            messagebox.showwarning("Seleccione una opción", "Por favor seleccione 'Individual' o 'Múltiple' dentro del menú Ampliaciones.")
+        if self._modo_actual not in ("individual", "multiple", "suspendido_regular"):
+            messagebox.showwarning("Seleccione una opción", "Por favor seleccione una opción del menú lateral.")
             return False
+
+        elif self._modo_actual == "suspendido_regular":
+            if not self._nro_informe_act.get().strip():
+                messagebox.showwarning("Datos incompletos", "Por favor ingrese el Nro. de Informe a generar.")
+                return False
+            campos = [
+                (self._ruta_excel_act, "Padrón de becarios (.xlsx)"),
+                (self._ruta_informe_succor_act, "Informe SUCCOR (.pdf)"),
+                (self._ruta_anexo_succor_act, "Anexo SUCCOR (.xlsx)"),
+            ]
+            for var, nombre in campos:
+                if not var.get().strip():
+                    messagebox.showwarning("Datos incompletos", f"Cargue el archivo: {nombre}")
+                    return False
+
+            resoluciones_cargadas = [v.get().strip() for v in self._resoluciones_act if v.get().strip()]
+            if not resoluciones_cargadas:
+                messagebox.showwarning("Datos incompletos", "Debe cargar al menos 1 Resolución en PDF.")
+                return False
+            return True
 
         if self._modo_actual == "individual":
             if not self._nro_informe.get().strip():
@@ -640,8 +787,8 @@ class AppInformes(ctk.CTk):
     def _iniciar_generacion(self) -> None:
         if self._procesando:
             return
-        if self._modo_actual not in ("individual", "multiple"):
-            messagebox.showinfo("Información", "Seleccione 'Individual' o 'Múltiple' dentro de Ampliaciones para generar informes.")
+        if self._modo_actual not in ("individual", "multiple", "suspendido_regular"):
+            messagebox.showinfo("Información", "Seleccione una opción válida para generar informes.")
             return
         if not self._validar_entradas():
             return
@@ -653,7 +800,13 @@ class AppInformes(ctk.CTk):
         self._lbl_estado.configure(text="Estado: Iniciando...")
         self._log("=" * 60)
         
-        nro = self._nro_informe.get().strip() if self._modo_actual == "individual" else self._nro_informe_mult.get().strip()
+        if self._modo_actual == "individual":
+            nro = self._nro_informe.get().strip()
+        elif self._modo_actual == "suspendido_regular":
+            nro = self._nro_informe_act.get().strip()
+        else:
+            nro = self._nro_informe_mult.get().strip()
+
         self._log(f"Inicio de generación de informe N° {nro} (Modo: {self._modo_actual})")
 
         hilo = threading.Thread(target=self._ejecutar_procesamiento, daemon=True)
@@ -674,6 +827,19 @@ class AppInformes(ctk.CTk):
                 )
                 res = procesador.ejecutar()
                 rutas_generadas = [res] if isinstance(res, Path) else (list(res) if res else [])
+            elif self._modo_actual == "suspendido_regular":
+                from procesador_actualizacion import ProcesadorActualizacionSuspendido
+                rutas_res = [v.get().strip() for v in self._resoluciones_act if v.get().strip()]
+                procesador = ProcesadorActualizacionSuspendido(
+                    ruta_padron=self._ruta_excel_act.get(),
+                    ruta_informe_succor=self._ruta_informe_succor_act.get(),
+                    ruta_anexo_succor=self._ruta_anexo_succor_act.get(),
+                    rutas_resoluciones=rutas_res,
+                    nro_informe=self._nro_informe_act.get().strip(),
+                    log=self._log,
+                    progreso=self._actualizar_progreso
+                )
+                rutas_generadas = procesador.ejecutar()
             else:
                 tipo_fmt = self._tipo_carga_formatos_mult.get()
                 if tipo_fmt == "Múltiple":

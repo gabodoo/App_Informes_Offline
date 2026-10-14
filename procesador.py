@@ -2875,8 +2875,11 @@ class ExtractorPadron:
         """A partir de una fila del DataFrame extrae y consolida los datos normalizados del becario uniendo Apellidos y Nombres."""
         cols_norm = {self._norm(k): k for k in fila.keys()}
 
-        def _get_val(*palabras_clave):
+        def _get_val(*palabras_clave, excluir=None):
+            excluir = excluir or []
             for orig, norm_col in cols_norm.items():
+                if any(ex in orig for ex in excluir):
+                    continue
                 if any(w in orig for w in palabras_clave):
                     val = str(fila[norm_col]).strip()
                     if val and val.lower() != "nan":
@@ -2884,14 +2887,25 @@ class ExtractorPadron:
             return ""
 
         # DNI
-        dni = limpiar_dni(_get_val("DNI", "CEDULA", "DOCUMENTO", "IDENTIDAD"))
+        dni = limpiar_dni(_get_val("DNI", "CEDULA", "DOCUMENTO", "IDENTIDAD", excluir=["TIPO", "FECHA", "DOC IES"]))
 
         # Consolidar apellidos (Paterno + Materno o Apellidos generales) y nombres
-        paterno = _get_val("APELLIDO PATERNO", "PATERN", "PRIMER APELLIDO")
-        materno = _get_val("APELLIDO MATERNO", "MATERN", "SEGUNDO APELLIDO")
-        apellidos_gen = _get_val("APELLIDOS", "APELLIDO")
-        nombres_gen = _get_val("NOMBRES", "NOMBRE")
-        becario_gen = _get_val("BECARIO", "ESTUDIANTE", "ALUMNO", "BENEFICIARIO", "POSTULANTE", "NOMBRE COMPLETO")
+        paterno = _get_val("APELLIDO PATERNO", "PATERN", "PRIMER APELLIDO", excluir=["TIPO", "FECHA", "DOC", "ID", "COD"])
+        materno = _get_val("APELLIDO MATERNO", "MATERN", "SEGUNDO APELLIDO", excluir=["TIPO", "FECHA", "DOC", "ID", "COD"])
+        apellidos_gen = _get_val("APELLIDOS", "APELLIDO", excluir=["TIPO", "FECHA", "DOC", "ID", "COD", "IES", "SEDE", "UNIVERSIDAD", "INSTITUCION", "ESTADO", "CONDICION"])
+        
+        # Nombres de la persona (excluir columnas institucionales como NOMBRE IES, NOMBRE BANCO, etc.)
+        nombres_gen = _get_val("NOMBRES", "NOMBRE", excluir=["IES", "SEDE", "UNIVERSIDAD", "INSTITUCION", "BANCO", "PROGRAMA", "BECA", "CARRERA", "TIPO", "DOC", "ID", "COD", "ESTADO", "CONDICION"])
+        
+        # Becario general (excluyendo ESTADO_BECARIO, ID_BECARIO, etc.)
+        becario_gen = _get_val("BECARIO", "ESTUDIANTE", "ALUMNO", "BENEFICIARIO", "POSTULANTE", "NOMBRE COMPLETO",
+                               excluir=["ESTADO", "CONDICION", "SITUACION", "TIPO", "DOC", "ID", "COD", "NRO", "NUM"])
+
+        # Si apellidos_gen y nombres_gen coincidieron en la misma columna 'APELLIDOS Y NOMBRES'
+        if apellidos_gen and nombres_gen and apellidos_gen == nombres_gen:
+            nombres_gen = ""
+            if not becario_gen:
+                becario_gen = apellidos_gen
 
         # Construir apellidos y nombres por separado
         apellidos_partes = []
@@ -2940,16 +2954,48 @@ class ExtractorPadron:
         apellidos = re.sub(r"\s+", " ", apellidos)
         nombres = re.sub(r"\s+", " ", nombres)
 
-        # Programa Beca
-        prog_beca = _get_val("PROGRAMA BECA", "PROGRAMA_BECA", "PROG_BECA", "NOM_BECA", "NOMBRE BECA", "PROGRAMA", "BECA", "MODALIDAD")
-        convocatoria = _get_val("CONVOCATORIA", "ANIO", "AÑO", "VERSION", "CONVOC")
+        # Programa Beca (evitando columnas de IDs numéricos como ID_BECA, COD_BECA)
+        prog_beca = _get_val(
+            "PROGRAMA BECA", "PROGRAMA_BECA", "PROG_BECA", "NOM_BECA", "NOMBRE BECA",
+            "MODALIDAD", "PROGRAMA", "BECA",
+            excluir=["ID", "COD", "CODIGO", "NRO", "NUMERO", "NUM", "TIPO"]
+        )
+        if prog_beca and (prog_beca.isdigit() or len(prog_beca) <= 2):
+            prog_beca = ""
+        if not prog_beca:
+            for orig, norm_col in cols_norm.items():
+                if any(ex in orig for ex in ("ID", "COD", "CODIGO", "NRO", "NUMERO", "NUM", "TIPO")):
+                    continue
+                if any(w in orig for w in ("BECA", "PROGRAMA", "MODALIDAD")):
+                    v = str(fila[norm_col]).strip()
+                    if v and not v.isdigit() and v.lower() != "nan" and ("BECA" in v.upper() or len(v) > 3):
+                        prog_beca = v
+                        break
+
+        # Convocatoria (evitando IDs como ID_CONVOCATORIA=67 y buscando año de 4 dígitos)
+        convocatoria = _get_val(
+            "CONVOCATORIA", "ANIO CONVOCATORIA", "AÑO CONVOCATORIA", "ANIO", "AÑO", "VERSION", "CONVOC",
+            excluir=["ID", "COD", "CODIGO", "NRO", "NUMERO", "NUM", "NACIMIENTO"]
+        )
+        m_c_yr = re.search(r"\b(20\d{2})\b", convocatoria)
+        if m_c_yr:
+            convocatoria = m_c_yr.group(1)
+        elif convocatoria and (convocatoria.isdigit() and len(convocatoria) <= 2):
+            convocatoria = ""
+            for orig, norm_col in cols_norm.items():
+                if any(w in orig for w in ("ANIO", "AÑO", "CONVOCATORIA", "VERSION", "EJERCICIO")):
+                    v = str(fila[norm_col]).strip()
+                    m_v = re.search(r"\b(20\d{2})\b", v)
+                    if m_v:
+                        convocatoria = m_v.group(1)
+                        break
 
         # Fechas de inicio y fin de beca (SIBEC)
         fecha_ini = self._extraer_fecha_columna(cols_norm, fila, tipo="inicio")
         fecha_fin = self._extraer_fecha_columna(cols_norm, fila, tipo="fin")
 
         # Sexo / Género
-        sexo_raw = _get_val("SEXO", "GENERO")
+        sexo_raw = _get_val("SEXO", "GENERO", excluir=["TIPO", "DOC", "ID"])
         sexo = "M"
         if sexo_raw:
             s = sexo_raw.upper().strip()
@@ -2957,7 +3003,7 @@ class ExtractorPadron:
                 sexo = "F"
 
         # RJ_ADJUDICACION
-        rj_adjudicacion = _get_val("RJ ADJUDICACION", "RJ_ADJUDICACION", "RJD ADJUDICACION", "RJD_ADJUDICACION", "RESOLUCION ADJUDICACION", "RESOLUCION_ADJUDICACION", "RESOLUCION", "RJ", "RJD")
+        rj_adjudicacion = _get_val("RJ ADJUDICACION", "RJ_ADJUDICACION", "RJD ADJUDICACION", "RJD_ADJUDICACION", "RESOLUCION ADJUDICACION", "RESOLUCION_ADJUDICACION", "RESOLUCION", "RJ", "RJD", excluir=["TIPO", "FECHA", "DOC IES"])
 
         # INSTITUCION (discriminando TIPO_INSTITUCION)
         institucion = ""
@@ -3025,10 +3071,11 @@ class ExtractorPadron:
 
 def generar_concordancias_genero(sexo: str) -> dict:
     """Genera variables de concordancia gramatical según el género."""
-    es_femenino = str(sexo).strip().upper().startswith("F")
+    s = str(sexo or "").strip().upper()
+    es_femenino = s.startswith("F") or s in ("2", "MUJER", "FEMENINO")
     if es_femenino:
         return {
-            "sexo_articulo_1": "1 becaria",
+            "sexo_articulo_1": "una (1) becaria",
             "sexo_articulo_2": "la becaria",
             "sexo_conector": "presentada por una becaria",
             "sexo_becario_a": "becaria",
@@ -3037,10 +3084,13 @@ def generar_concordancias_genero(sexo: str) -> dict:
             "el_la_becario_a": "la becaria",
             "del_becario_a": "de la becaria",
             "a_la_becario_a": "a la becaria",
+            "de_un_a_becario_a": "de una (1) becaria",
+            "de_una_becaria": "de una (1) becaria",
+            "de_un_becario": "de una (1) becaria",
         }
     else:
         return {
-            "sexo_articulo_1": "1 becario",
+            "sexo_articulo_1": "un (1) becario",
             "sexo_articulo_2": "el becario",
             "sexo_conector": "presentado por un becario",
             "sexo_becario_a": "becario",
@@ -3049,6 +3099,9 @@ def generar_concordancias_genero(sexo: str) -> dict:
             "el_la_becario_a": "el becario",
             "del_becario_a": "del becario",
             "a_la_becario_a": "al becario",
+            "de_un_a_becario_a": "de un (1) becario",
+            "de_una_becaria": "de un (1) becario",
+            "de_un_becario": "de un (1) becario",
         }
 
 
@@ -3188,13 +3241,14 @@ def limpiar_nombre_informe(nombre: str) -> str:
 
 
 def normalizar_sigedo_con_anio(sigedo: str, anio: int | str = 2026) -> str:
-    """Asegura que el número de SIGEDO o expediente tenga el año '-2026'."""
+    """Asegura que el número de SIGEDO o expediente tenga el año '-2026' sin duplicar años."""
     s = str(sigedo or "").strip()
     if not s:
         return ""
     s = re.sub(r"\s*-\s*", "-", s)
-    if re.match(r"^\d{4,8}$", s):
-        s = f"{s}-{anio}"
+    m = re.search(r"\b(\d{4,8})\b", s)
+    if m:
+        return f"{m.group(1)}-{anio}"
     return s
 
 
@@ -3262,22 +3316,50 @@ def determinar_beca_convocatoria_multiple(becarios: list[dict], datos_succor: di
         return ", ".join(formateadas[:-1]) + f" y {formateadas[-1]}"
 
 def limpiar_beca_convocatoria(programa: str, convocatoria: str) -> str:
-    """Genera texto limpio de beca y año. Ej: 'BECA 18 BECA REPARED', '2021' -> 'BECA 18 - 2021'."""
-    if not programa:
-        res = f"{convocatoria}".strip() if convocatoria else ""
-        return corregir_nombre_beca_excelencia(res)
-    prog = programa.strip()
+    """Genera texto limpio de beca y año. Ej: 'BECA 18 BECA REPARED', '2021' -> 'Beca 18 - Convocatoria 2021'."""
+    prog = str(programa or "").strip()
+    conv = str(convocatoria or "").strip()
+
+    # Si programa es puramente numérico (ej: '67'), no es un nombre de beca, es un código/ID
+    if prog.isdigit() or (len(prog) <= 2 and prog):
+        prog = ""
+
+    # Extraer año de 4 dígitos si está presente
+    m_anio = re.search(r"\b(20\d{2})\b", conv) or re.search(r"\b(20\d{2})\b", prog)
+    anio_str = m_anio.group(1) if m_anio else ""
+
+    # Si convocatoria es puramente numérica y no es año de 4 dígitos (ej: '67'), descartarla como ID
+    if conv.isdigit() and not m_anio:
+        conv = ""
+
+    if not prog:
+        if anio_str:
+            return f"Beca 18 - Convocatoria {anio_str}"
+        return ""
+
     if "EXCELENCIA" in prog.upper():
         nombre_beca = "Beca de Excelencia Académica para Hijos de Docentes"
     else:
         m = re.match(r"(BECA\s+\w+)", prog, re.IGNORECASE)
         nombre_beca = m.group(1).strip() if m else prog
         nombre_beca = corregir_nombre_beca_excelencia(nombre_beca)
-    anio = re.search(r"\b(20\d{2})\b", convocatoria or "") or re.search(r"\b(20\d{2})\b", programa or "")
-    anio_str = anio.group(1) if anio else convocatoria
+
+    # Validar que nombre_beca no sea un número o texto residual sin sentido
+    if nombre_beca.isdigit() or (not any(w in nombre_beca.upper() for w in ("BECA", "CREDITO", "CRÉDITO")) and len(nombre_beca) < 5):
+        if anio_str:
+            return f"Beca 18 - Convocatoria {anio_str}"
+        return ""
+
+    if not nombre_beca.startswith("Beca") and not nombre_beca.startswith("BECA"):
+        nombre_beca = f"Beca {nombre_beca}"
+    nombre_beca = nombre_beca.title() if not nombre_beca.isupper() else nombre_beca
+
     if anio_str:
-        return f"{nombre_beca} - {anio_str}"
+        return f"{nombre_beca} - Convocatoria {anio_str}"
+    elif conv and not conv.isdigit():
+        return f"{nombre_beca} - {conv}"
     return nombre_beca
+
 
 
 def nombre_en_orden_nombres_apellidos(apellidos: str, nombres: str) -> str:
@@ -3390,12 +3472,13 @@ class ProcesadorInformes:
         ctx["NUMERO_INFORME"] = ctx["NOMBRE_INFORME_SUCCOR"]
         # REFERENCIA_B — literal b) con el informe SUCCOR
         ctx["REFERENCIA_B"] = f"b) {ctx['NOMBRE_INFORME_SUCCOR']}"
-        # SIGEDO: preferir Expediente del formato autogenerado; fallback SUCCOR
+        # SIGEDO: debe ser del informe (SUCCOR); fallback formato autogenerado
+        sigedo_succor = datos_succor.get("numero_sigedo", "")
         num_exp = datos_fmt.get("numero_expediente", "")
-        if num_exp:
-            ctx["NUMERO_SIGEDO"] = normalizar_sigedo_con_anio(num_exp)
+        if sigedo_succor:
+            ctx["NUMERO_SIGEDO"] = normalizar_sigedo_con_anio(sigedo_succor)
         else:
-            ctx["NUMERO_SIGEDO"] = normalizar_sigedo_con_anio(datos_succor.get("numero_sigedo", ""))
+            ctx["NUMERO_SIGEDO"] = normalizar_sigedo_con_anio(num_exp)
         ctx["SEMESTRE_SOLICITADO"] = datos_succor.get("semestre_solicitado", "") or "2026-II"
         ctx["RJD_ADJUDICACION"] = datos_succor.get("rjd_adjudicacion", "")
         # Limpiar e institucion completa
@@ -3493,18 +3576,44 @@ class ProcesadorInformes:
                 else:
                     nom_ord_upper = nom_raw.upper().strip()
 
+            # Rescate inmediato si el nombre del padrón quedó vacío o inválido (ej: 'ACTIVO', '67')
+            if not nom_ord_upper or nom_ord_upper in ("NAN", "NONE", "ACTIVO", "REGULAR", "BENEFICIARIO", "67") or len(nom_ord_upper.split()) < 2:
+                nombre_fb = datos_succor.get("nombre_aproximado", "") or datos_fmt.get("nombres", "")
+                if nombre_fb:
+                    if "," in nombre_fb:
+                        p = [x.strip() for x in nombre_fb.split(",", 1)]
+                        nom_ord_upper = f"{p[1]} {p[0]}".upper().strip()
+                    else:
+                        nom_ord_upper = nombre_fb.upper().strip()
+
             ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"] = nom_ord_upper
             ctx["NOMBRE_PRIMERO_NOMBRES"] = nombre_en_orden_nombres_apellidos(apellidos_bd, nombres_bd) or nom_ord_upper.title()
             ctx["APELLIDOS_BECARIO"] = apellidos_bd.upper() if apellidos_bd else ""
             ctx["NOMBRES_BECARIO"] = nombres_bd.upper() if nombres_bd else ""
 
+            # Extraer año de la RJ de adjudicación como respaldo confiable (ej: RJ 411-2021-... -> 2021)
+            anio_rj = ""
+            rj_str = str(datos_bd.get("rj_adjudicacion") or datos_succor.get("rjd_adjudicacion") or "")
+            m_rj_anio = re.search(r"[-–/](20\d{2})[-–/]", rj_str)
+            if m_rj_anio:
+                anio_rj = m_rj_anio.group(1)
+
             # Limpiar BECA y CONVOCATORIA (dejar solo 'BECA X - AÑO') con fallback multi-fuente
             beca_bd = limpiar_beca_convocatoria(
                 datos_bd.get("programa_beca", ""), datos_bd.get("convocatoria", "")
             )
-            if not beca_bd or beca_bd.strip() in ("", "-", "--", "(no detectada)"):
+            # Si beca_bd vino vacía, '67', numérica o sin la palabra BECA, rescatar de SUCCOR / RJ
+            if not beca_bd or beca_bd.strip() in ("", "-", "--", "(no detectada)", "67") or not "BECA" in beca_bd.upper():
                 m_b = re.search(r"(Beca\s+\d+|Beca\s+[A-Za-z]+)\s*[-–—]?\s*(?:Convocatoria\s*)?(\d{4})?", datos_succor.get("raw_text", ""), re.IGNORECASE)
-                beca_bd = f"{m_b.group(1)} - Convocatoria {m_b.group(2) or '2023'}" if m_b else "Beca 18 - Convocatoria 2023"
+                if m_b:
+                    b_nom = m_b.group(1).title()
+                    b_yr = m_b.group(2) or anio_rj or "2021"
+                    beca_bd = f"{b_nom} - Convocatoria {b_yr}"
+                else:
+                    beca_bd = f"Beca 18 - Convocatoria {anio_rj or '2021'}"
+            elif anio_rj and not re.search(r"\b20\d{2}\b", beca_bd):
+                beca_bd = f"{beca_bd} - Convocatoria {anio_rj}"
+
             ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = beca_bd
             ctx["BECA_TITULO"] = beca_bd.title()
 
@@ -3554,9 +3663,12 @@ class ProcesadorInformes:
             self._log(f"  Tabla de ciclos: {len(ciclos)} filas generadas (desde {fecha_a_corto(fi)} hasta {fecha_a_corto(ff)})")
 
             # Concordancias de género
-            concordancias = generar_concordancias_genero(datos_bd["sexo"])
+            sexo_str = str(datos_bd.get("sexo", "")).strip().upper()
+            es_fem = sexo_str.startswith("F") or sexo_str in ("2", "MUJER", "FEMENINO")
+            concordancias = generar_concordancias_genero("F" if es_fem else "M")
             ctx.update({k.upper(): v for k, v in concordancias.items()})
-            ctx["TRATO_GENERO"] = "Señorita" if datos_bd["sexo"] == "F" else "Señor"
+            ctx["TRATO_GENERO"] = "Señorita" if es_fem else "Señor"
+            ctx["SEXO"] = "F" if es_fem else "M"
 
             inst_padr = datos_bd.get("institucion", "")
             if inst_padr:
@@ -3616,7 +3728,8 @@ class ProcesadorInformes:
             ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi_fb, ff_fb)
             gen_fallback = datos_succor.get("genero", "F")
             ctx.update({k.upper(): v for k, v in generar_concordancias_genero(gen_fallback).items()})
-            ctx["TRATO_GENERO"] = "Señorita" if gen_fallback == "F" else "Señor"
+            ctx["TRATO_GENERO"] = "Señorita" if str(gen_fallback).strip().upper().startswith("F") else "Señor"
+            ctx["SEXO"] = "F" if str(gen_fallback).strip().upper().startswith("F") else "M"
 
         # --- Paso 5: Documento de la IES ---
         self._progreso(0.60, "Extrayendo documento de la IES...")
@@ -3712,9 +3825,15 @@ class ProcesadorInformes:
         if not ctx["INSTITUCION"] or re.search(r"^\s*Pontificia\s+Universidad(?:\s+Cat[oó]lica)?\s*$", ctx["INSTITUCION"], re.IGNORECASE) or ("Pontificia Universidad" in ctx["INSTITUCION"] and "Católica del Perú" not in ctx["INSTITUCION"] and "Catolica del Peru" not in ctx["INSTITUCION"]):
             ctx["INSTITUCION"] = "Pontificia Universidad Católica del Perú"
 
-        if not ctx.get("BECA_Y_CONVOCATORIA_VALIDADA"):
-            ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = "Beca 18 - Convocatoria 2023"
-            ctx["BECA_TITULO"] = "Beca 18 - Convocatoria 2023"
+        beca_cur = str(ctx.get("BECA_Y_CONVOCATORIA_VALIDADA", "")).strip()
+        if not beca_cur or beca_cur in ("67", "-", "--", "(no detectada)") or not "BECA" in beca_cur.upper():
+            anio_def = "2021"
+            rj_tmp = str(ctx.get("RJD_ADJUDICACION") or "")
+            m_r = re.search(r"[-–/](20\d{2})[-–/]", rj_tmp)
+            if m_r:
+                anio_def = m_r.group(1)
+            ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = f"Beca 18 - Convocatoria {anio_def}"
+            ctx["BECA_TITULO"] = ctx["BECA_Y_CONVOCATORIA_VALIDADA"].title()
 
         if not ctx.get("FECHA_INICIO_SIBEC"):
             ctx["FECHA_INICIO_SIBEC"] = "23/08/2021"
@@ -3739,9 +3858,24 @@ class ProcesadorInformes:
         ctx["CARRERA_PROFESIONAL"] = ctx["CARRERA"]
         ctx["IES"] = ctx["INSTITUCION"]
         ctx["UNIVERSIDAD"] = ctx["INSTITUCION"]
-        ctx["DESTINATARIO"] = ctx["NOMBRE_PRIMERO_NOMBRES"]
-        ctx["DATOS_BECARIO"] = ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"]
-        ctx["NOMBRE_COMPLETO"] = ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"]
+
+        # Validar y asegurar nombres antes de propagar a alias
+        nom_val = str(ctx.get("NOMBRES_Y_APELLIDOS_VALIDADOS", "")).strip()
+        if not nom_val or nom_val in ("67", "NAN", "NONE", "ACTIVO", "REGULAR", "BENEFICIARIO") or len(nom_val.split()) < 2:
+            nom_rescate = datos_succor.get("nombre_aproximado", "") or datos_fmt.get("nombres", "")
+            if nom_rescate:
+                if "," in nom_rescate:
+                    p = [x.strip() for x in nom_rescate.split(",", 1)]
+                    nom_val = f"{p[1]} {p[0]}".upper().strip()
+                else:
+                    nom_val = nom_rescate.upper().strip()
+                ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"] = nom_val
+
+        ctx["DESTINATARIO"] = ctx.get("NOMBRE_PRIMERO_NOMBRES") or nom_val.title()
+        ctx["DATOS_BECARIO"] = nom_val
+        ctx["NOMBRE_COMPLETO"] = nom_val
+        ctx["BECARIO"] = nom_val
+        ctx["BECARIA"] = nom_val
 
         # Otras extracciones del formato autogenerado y SUCCOR
         ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
@@ -3787,6 +3921,10 @@ class ProcesadorInformes:
         try:
             from generador_oficio import GeneradorOficio
             gen_oficio = GeneradorOficio()
+            ctx["NUMERO_INFORME_GENERAR"] = self.nro_informe
+            ctx["INFORME_SUS"] = f"Informe N° {self.nro_informe}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
+            ctx["SEMESTRE_SOLICITADO"] = ctx.get("SEMESTRE_SOLICITADO", "2026-II")
+            ctx["ASUNTO_OFICIO"] = f"Ampliación excepcional de la duración del periodo de estudios por el semestre {ctx['SEMESTRE_SOLICITADO']}"
             ruta_oficio = gen_oficio.generar(ctx, self._log)
         except Exception as e:
             self._log(f"Error generando oficio: {e}")
@@ -3972,8 +4110,26 @@ class ProcesadorInformes:
             if fila_becario:
                 datos_bd = padron.extraer_datos(fila_becario)
                 ctx["DNI_VALIDADO"] = datos_bd["dni_validado"] or dni_buscar
-                ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"] = datos_bd["nombres_y_apellidos_validados"]
-                ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = limpiar_beca_convocatoria(datos_bd["programa_beca"], datos_bd["convocatoria"])
+                nom_ord_m = datos_bd.get("nombres_y_apellidos_validados", "")
+                if not nom_ord_m or nom_ord_m in ("NAN", "NONE", "ACTIVO", "REGULAR", "BENEFICIARIO", "67") or len(nom_ord_m.split()) < 2:
+                    nom_ord_m = nombre_buscar or ""
+                ctx["NOMBRES_Y_APELLIDOS_VALIDADOS"] = nom_ord_m
+                
+                anio_rj_m = ""
+                rj_m_str = str(datos_bd.get("rj_adjudicacion") or "")
+                m_rjm = re.search(r"[-–/](20\d{2})[-–/]", rj_m_str)
+                if m_rjm:
+                    anio_rj_m = m_rjm.group(1)
+
+                beca_m = limpiar_beca_convocatoria(datos_bd.get("programa_beca", ""), datos_bd.get("convocatoria", ""))
+                if not beca_m or beca_m.strip() in ("", "-", "--", "(no detectada)", "67") or not "BECA" in beca_m.upper():
+                    m_b_succ = re.search(r"(Beca\s+\d+|Beca\s+[A-Za-z]+)\s*[-–—]?\s*(?:Convocatoria\s*)?(\d{4})?", datos_succor.get("raw_text", ""), re.IGNORECASE)
+                    if m_b_succ:
+                        beca_m = f"{m_b_succ.group(1).title()} - Convocatoria {m_b_succ.group(2) or anio_rj_m or '2021'}"
+                    else:
+                        beca_m = f"Beca 18 - Convocatoria {anio_rj_m or '2021'}"
+
+                ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = beca_m
                 if not super_contexto["BECA_TITULO_GLOBAL"] and ctx["BECA_Y_CONVOCATORIA_VALIDADA"]:
                     super_contexto["BECA_TITULO_GLOBAL"] = ctx["BECA_Y_CONVOCATORIA_VALIDADA"].title()
                 ctx["APELLIDOS_BECARIO"] = datos_bd.get("apellidos_becario", "").upper()
@@ -3991,9 +4147,12 @@ class ProcesadorInformes:
                 ctx["FECHA_INICIO_SIBEC"] = fecha_a_corto(fi)
                 ctx["FECHA_FIN_SIBEC"] = fecha_a_corto(ff)
                 ctx["TABLA_CICLOS"] = construir_tabla_ciclos(fi, ff)
-                concordancias = generar_concordancias_genero(datos_bd["sexo"])
+                sexo_str = str(datos_bd.get("sexo", "")).strip().upper()
+                es_fem = sexo_str.startswith("F") or sexo_str in ("2", "MUJER", "FEMENINO")
+                concordancias = generar_concordancias_genero("F" if es_fem else "M")
                 ctx.update({k.upper(): v for k, v in concordancias.items()})
-                ctx["TRATO_GENERO"] = "Señorita" if datos_bd["sexo"] == "F" else "Señor"
+                ctx["TRATO_GENERO"] = "Señorita" if es_fem else "Señor"
+                ctx["SEXO"] = "F" if es_fem else "M"
                 
                 # Jalar directamente del padrón RJ_ADJUDICACION, INSTITUCION y CARRERA
                 ctx["RJD_ADJUDICACION"] = datos_bd.get("rj_adjudicacion", "")
@@ -4259,14 +4418,18 @@ class ProcesadorInformes:
             # Generar Oficio Individual
             ctx_oficio = ctx.copy()
             ctx_oficio["DESTINATARIO"] = ctx["NOMBRE_PRIMERO_NOMBRES"]
+            ctx_oficio["NOMBRES_Y_APELLIDOS"] = ctx["NOMBRE_PRIMERO_NOMBRES"]
             ctx_oficio["NOMBRES_Y_APELLIDOS_VALIDADOS"] = ctx["NOMBRE_PRIMERO_NOMBRES"]
             ctx_oficio["NUMERO_INFORME_GENERAR"] = self.nro_informe
+            ctx_oficio["INFORME_SUS"] = f"Informe N° {self.nro_informe}-2026-MINEDU/VMGI-PRONABEC-DIBEC-SUS"
             ctx_oficio["SEMESTRE_SOLICITADO"] = super_contexto["SEMESTRE_SOLICITADO_GLOBAL"]
+            ctx_oficio["ASUNTO_OFICIO"] = f"Ampliación excepcional de la duración del periodo de estudios por el semestre {super_contexto['SEMESTRE_SOLICITADO_GLOBAL']}"
             ctx_oficio["REFERENCIA_SUCCOR"] = super_contexto["REFERENCIA_SUCCOR"]
             sigedo_integrado = normalizar_sigedo_con_anio(super_contexto.get("NUMERO_SIGEDO_GLOBAL", ""))
             sigedo_c = sigedo_integrado.split("-")[0] if sigedo_integrado else ""
             ctx_oficio["SIGEDO_CORTO"] = sigedo_c
             ctx_oficio["NUMERO_SIGEDO"] = sigedo_integrado
+            ctx_oficio["SIGEDO"] = sigedo_integrado
             ctx_oficio["NUMERO_SIGEDO_GLOBAL"] = sigedo_integrado
             ctx_oficio["NOMBRE_SALIDA_OFICIO"] = f"{sigedo_c}_Oficio_{idx+1}.docx"
             try:
