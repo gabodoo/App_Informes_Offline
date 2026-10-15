@@ -17,7 +17,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['main.py'],
+    ['C:/Users/jose.diarma/Desktop/Macrolima/main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,

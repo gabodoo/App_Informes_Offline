@@ -436,6 +436,15 @@ class ExtractorFormatoAutogenerado:
         m_corr = cls.PATRON_CORREO.search(texto_completo)
         if m_corr:
             resultado["correo_electronico"] = m_corr.group(1).strip()
+        else:
+            m_gen = re.search(r"(?:correo(?:\s+electr[oó]nico)?|email|e-mail)\s*[:\-\s]+\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", texto_completo, re.IGNORECASE)
+            if m_gen:
+                resultado["correo_electronico"] = m_gen.group(1).strip()
+            else:
+                todos_correos = re.findall(r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b", texto_completo)
+                validos = [c.strip() for c in todos_correos if not any(dom in c.lower() for dom in ("pronabec.gob.pe", "minedu.gob.pe"))]
+                if validos:
+                    resultado["correo_electronico"] = validos[0]
 
         m_casilla = cls.PATRON_CASILLA.search(texto_completo)
         if m_casilla:
@@ -3043,6 +3052,9 @@ class ExtractorPadron:
         if exp_padron:
             exp_padron = re.sub(r"\.0+$", "", exp_padron).strip()
 
+        correo_padron = _get_val("CORREO", "EMAIL", "MAIL", "E-MAIL", "CORREO_ELECTRONICO", "CORREO ELECTRONICO", "CORREO_INSTITUCIONAL", "CORREO_PERSONAL")
+        tel_padron = _get_val("TELEFONO", "CELULAR", "TEL", "CEL", "MOVIL", "MÓVIL", "NUMERO_TELEFONO", "NUM_CELULAR")
+
         return {
             "dni_validado": dni,
             "apellidos_becario": apellidos,
@@ -3059,6 +3071,8 @@ class ExtractorPadron:
             "nexpediente": exp_padron,
             "expediente_padron": exp_padron,
             "expediente_becario": exp_padron,
+            "correo_electronico": correo_padron,
+            "telefono_contacto": tel_padron,
         }
 
 
@@ -3878,9 +3892,15 @@ class ProcesadorInformes:
         ctx["BECARIA"] = nom_val
 
         # Otras extracciones del formato autogenerado y SUCCOR
-        ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
+        correo_fmt = str(datos_fmt.get("correo_electronico", "") or "").strip()
+        correo_bd = str(datos_bd.get("correo_electronico", "") or "").strip() if 'datos_bd' in locals() and datos_bd else ""
+        ctx["CORREO_ELECTRONICO"] = correo_fmt or correo_bd
+
         ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
-        ctx["TELEFONO_CONTACTO"] = datos_fmt.get("telefono_contacto", "")
+
+        tel_fmt = str(datos_fmt.get("telefono_contacto", "") or "").strip()
+        tel_bd = str(datos_bd.get("telefono_contacto", "") or "").strip() if 'datos_bd' in locals() and datos_bd else ""
+        ctx["TELEFONO_CONTACTO"] = tel_fmt or tel_bd
         exp_sol_ind = str(datos_fmt.get("numero_expediente", "")).strip() or str(ctx.get("NUMERO_SIGEDO", "")).split("-")[0].strip()
         exp_pad_ind = ctx.get("EXPEDIENTE_PADRON") or padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
         exp_pad_ind = re.sub(r"\.0+$", "", str(exp_pad_ind or "")).strip()

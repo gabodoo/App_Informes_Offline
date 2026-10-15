@@ -2,7 +2,9 @@ import sys
 import re
 from pathlib import Path
 from copy import copy
+from typing import Any
 import openpyxl
+from openpyxl.cell.cell import MergedCell
 
 
 def get_base_dir() -> Path:
@@ -37,6 +39,48 @@ def get_salida_dir() -> Path:
     salida = base / "Informes_Generados"
     salida.mkdir(parents=True, exist_ok=True)
     return salida
+
+
+def asignar_valor_celda(ws, r: int, c: int, valor: Any) -> None:
+    """Asigna valor a una celda de manera segura, resolviendo la celda raíz si es MergedCell."""
+    if r is None or c is None:
+        return
+    try:
+        cell = ws.cell(row=r, column=c)
+        if isinstance(cell, MergedCell) or type(cell).__name__ == "MergedCell":
+            for rng in ws.merged_cells.ranges:
+                if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+                    ws.cell(row=rng.min_row, column=rng.min_col).value = valor
+                    return
+            return
+        cell.value = valor
+    except AttributeError:
+        # Si openpyxl considera la celda de solo lectura (MergedCell no detectada)
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+                try:
+                    ws.cell(row=rng.min_row, column=rng.min_col).value = valor
+                except Exception:
+                    pass
+                return
+    except Exception:
+        pass
+
+
+def obtener_valor_celda(ws, r: int, c: int) -> Any:
+    """Obtiene el valor de una celda, buscando en la celda raíz si es una MergedCell."""
+    if r is None or c is None:
+        return None
+    try:
+        cell = ws.cell(row=r, column=c)
+        if isinstance(cell, MergedCell) or type(cell).__name__ == "MergedCell":
+            for rng in ws.merged_cells.ranges:
+                if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+                    return ws.cell(row=rng.min_row, column=rng.min_col).value
+            return None
+        return cell.value
+    except Exception:
+        return None
 
 
 class GeneradorExcel:
@@ -103,69 +147,163 @@ class GeneradorExcel:
         exp_b = re.sub(r"\.0+$", "", exp_b).strip()
         exp_b_val = int(exp_b) if exp_b.isdigit() else exp_b
 
-        if es_casilla:
-            # Asignaciones estándar según plantilla casilla (fila 3)
-            ws["B3"].value = dni_val
-            ws["C3"].value = nombres
-            ws["D3"].value = exp_b_val
-            ws["E3"].value = sigedo_full or sigedo_corto
-            ws["K3"].value = tel_val
-            
-            # Documento en Col H3
-            desc_doc_base = str(ws["H3"].value or "")
-            patron_doc = re.compile(r"INFORME N[°ºo\.]?\s*\d*-2026-MINEDU/VMGI-PRONABEC-DIBEC(?:-SUS)?", re.IGNORECASE)
-            if patron_doc.search(desc_doc_base):
-                ws["H3"].value = patron_doc.sub(informe_generado, desc_doc_base)
-            else:
-                col_h_mod = re.sub(r"INFORME N[°ºo\.]?\s*\d+", f"INFORME Nº {num_inf}", desc_doc_base, flags=re.IGNORECASE)
-                if col_h_mod == desc_doc_base and "INFORME" in desc_doc_base.upper():
-                    ws["H3"].value = f"OFICIO Nº xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC, {informe_generado}"
-                elif col_h_mod != desc_doc_base:
-                    ws["H3"].value = col_h_mod
-                else:
-                    ws["H3"].value = f"OFICIO Nº xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC, {informe_generado}"
+        semestre = str(contexto.get("SEMESTRE_SOLICITADO", "2026-II")).strip()
+        asunto_notif = str(contexto.get("ASUNTO_OFICIO") or f"Ampliación excepcional de la duración del periodo de estudios por el semestre {semestre}").strip()
+        oficio_doc = "OFICIO N° xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC"
 
-            # Resguardo adicional: escaneo de encabezados en fila 2 por si columnas varían
-            for col_idx in range(1, ws.max_column + 1):
-                hdr = str(ws.cell(row=2, column=col_idx).value or "").strip().upper()
-                if hdr == "DNI" or "D.N.I." in hdr:
-                    ws.cell(row=3, column=col_idx).value = dni_val
-                elif "NOMBRE" in hdr or "DESTINATARIO" in hdr:
-                    ws.cell(row=3, column=col_idx).value = nombres
-                elif "EXPEDIENTE" in hdr:
-                    ws.cell(row=3, column=col_idx).value = exp_b_val
-                elif "SIGEDO" in hdr:
-                    ws.cell(row=3, column=col_idx).value = sigedo_full or sigedo_corto
-                elif "TELÉFONO" in hdr or "TELEFONO" in hdr:
-                    ws.cell(row=3, column=col_idx).value = tel_val
+        # 1. Determinación de la fila de datos y mapeo inteligente de columnas
+        col_dni = None
+        col_dest = None
+        col_correo = None
+        col_sig = None
+        col_tel = None
+        col_exp = None
+        col_asunto = None
+        col_doc = None
+        col_msj = None
+        col_adj = None
+
+        ultima_fila_header = 2 if es_casilla else 3
+
+        # Mapear columnas combinando textos de todas las filas de encabezado (para columnas con celdas combinadas)
+        for c in range(1, ws.max_column + 1):
+            hdr_comb = " ".join(str(ws.cell(row=r, column=c).value or "").strip().upper() for r in range(1, ultima_fila_header + 1))
+            if not hdr_comb:
+                continue
+
+            if ("DNI" in hdr_comb or "D.N.I." in hdr_comb or "DOCUMENTO DE IDENTIDAD" in hdr_comb) and "TIPO" not in hdr_comb:
+                if col_dni is None: col_dni = c
+            elif any(w in hdr_comb for w in ("DESTINATARIO", "NOMBRES Y APELLIDOS", "APELLIDOS Y NOMBRES", "NOMBRE DEL BECARIO", "NOMBRE COMPLETO")) and "OFICINA" not in hdr_comb and "NOTIFICACIONES" not in hdr_comb:
+                if col_dest is None: col_dest = c
+            elif any(w in hdr_comb for w in ("CORREO ELECTRÓNICO", "CORREO ELECTRONICO", "CORREO", "EMAIL", "E-MAIL")) and "NOTIFICACIONES" not in hdr_comb:
+                if col_correo is None: col_correo = c
+            elif "SIGEDO" in hdr_comb or ("EXPEDIENTE" in hdr_comb and "BECARIO" not in hdr_comb and "PADRON" not in hdr_comb):
+                if col_sig is None: col_sig = c
+            elif any(w in hdr_comb for w in ("TELÉFONO", "TELEFONO", "CELULAR")):
+                if col_tel is None: col_tel = c
+            elif "EXPEDIENTE" in hdr_comb and any(w in hdr_comb for w in ("BECARIO", "PADRON", "SIBEC")):
+                if col_exp is None: col_exp = c
+            elif any(w in hdr_comb for w in ("TIPIFICACIÓN", "TIPIFICACION", "ASUNTO")):
+                if col_asunto is None: col_asunto = c
+            elif any(w in hdr_comb for w in ("N° DE DOCUMENTO", "NUMERO DE DOCUMENTO", "DOCUMENTO EMITIDO")):
+                if col_doc is None: col_doc = c
+            elif any(w in hdr_comb for w in ("DESCRIPCIÓN", "DESCRIPCION", "MENSAJE DE EMISIÓN", "MENSAJE DE EMISION")):
+                if col_msj is None: col_msj = c
+            elif any(w in hdr_comb for w in ("ADJUNTAR EN EL CORREO", "NUMERO DE (ITEM)", "ARCHIVO PARA ADJUNTAR")):
+                if col_adj is None: col_adj = c
+
+        # Valores de respaldo por defecto si algún encabezado no se reconoció
+        if es_casilla:
+            fila_datos = 3
+            if not col_dni: col_dni = 2
+            if not col_dest: col_dest = 3
+            if not col_exp: col_exp = 4
+            if not col_sig: col_sig = 5
+            if not col_adj: col_adj = 8
+            if not col_tel: col_tel = 11
+
+            if col_dni: asignar_valor_celda(ws, fila_datos, col_dni, dni_val)
+            if col_dest: asignar_valor_celda(ws, fila_datos, col_dest, nombres)
+            if col_exp: asignar_valor_celda(ws, fila_datos, col_exp, exp_b_val)
+            if col_sig: asignar_valor_celda(ws, fila_datos, col_sig, sigedo_full or sigedo_corto)
+            if col_tel: asignar_valor_celda(ws, fila_datos, col_tel, tel_val)
+            if col_adj:
+                desc_doc_base = str(ws.cell(row=fila_datos, column=col_adj).value or "")
+                patron_doc = re.compile(r"INFORME N[°ºo\.]?\s*\d*-2026-MINEDU/VMGI-PRONABEC-DIBEC(?:-SUS)?", re.IGNORECASE)
+                if patron_doc.search(desc_doc_base):
+                    asignar_valor_celda(ws, fila_datos, col_adj, patron_doc.sub(informe_generado, desc_doc_base))
+                else:
+                    asignar_valor_celda(ws, fila_datos, col_adj, f"OFICIO Nº xxx-2026-MINEDU/VMGI-PRONABEC-DIBEC, {informe_generado}")
 
             nombre_salida = f"{sigedo_corto or dni or 'notificacion'}_notificacion_casilla.xlsx"
         else:
-            # Notificación por Correo Electrónico
-            for col_idx in range(1, ws.max_column + 1):
-                hdr = str(ws.cell(row=2, column=col_idx).value or "").strip().upper()
-                if "SIGEDO" == hdr or ("SIGEDO" in hdr and "DESTINATARIO" not in hdr):
-                    ws.cell(row=3, column=col_idx).value = int(sigedo_corto) if sigedo_corto.isdigit() else (sigedo_full or sigedo_corto)
-                elif "DNI" == hdr or "D.N.I." in hdr:
-                    ws.cell(row=3, column=col_idx).value = dni_val
-                elif ("DESTINATARIO" in hdr or "NOMBRE" in hdr) and "NOTIFICACIONES" not in hdr:
-                    ws.cell(row=3, column=col_idx).value = nombres
-                elif ("CORREO ELECTRÓNICO" in hdr or "CORREO ELECTRONICO" in hdr) and "NOTIFICACIONES" not in hdr:
-                    ws.cell(row=3, column=col_idx).value = correo
-                elif ("TELÉFONO" in hdr or "TELEFONO" in hdr) and "NOTIFICACIONES" not in hdr:
-                    ws.cell(row=3, column=col_idx).value = tel_val
+            if not col_sig: col_sig = 2
+            if not col_dni: col_dni = 5
+            if not col_dest: col_dest = 7
+            if not col_asunto: col_asunto = 8
+            if not col_doc: col_doc = 9
+            if not col_msj: col_msj = 10
+            if not col_correo: col_correo = 12
+            if not col_tel: col_tel = 13
+            if not col_adj: col_adj = 14
 
-            patron_inf = re.compile(r"Informe\s+N[°ºo\.]?\s*\d*-2026-MINEDU/VMGI-PRONABEC-DIBEC(?:-SUS)?", re.IGNORECASE)
-            patron_inf_generico = re.compile(r"Informe\s+N[°ºo\.]?\s*\d+", re.IGNORECASE)
+            # En plantilla_notificacion.xlsx (notificación individual por correo):
+            # Las filas 4 y 5 corresponden a la notificación (con celdas combinadas verticalmente en varias columnas).
+            # Para el campo 'NUMERO DE (ITEM) DEL ARCHIVO PARA ADJUNTAR EN EL CORREO' (col_adj):
+            # - Fila 4: Item I (El Informe SUS)
+            # - Fila 5: Item II (El Oficio)
+            for f in (4, 5):
+                if col_sig: asignar_valor_celda(ws, f, col_sig, sigedo_full or sigedo_corto)
+                if col_dni: asignar_valor_celda(ws, f, col_dni, dni_val)
+                if col_dest: asignar_valor_celda(ws, f, col_dest, nombres)
+                if col_asunto: asignar_valor_celda(ws, f, col_asunto, asunto_notif)
+                if col_doc: asignar_valor_celda(ws, f, col_doc, oficio_doc)
+                if col_msj: asignar_valor_celda(ws, f, col_msj, asunto_notif)
+                if col_correo: asignar_valor_celda(ws, f, col_correo, correo)
+                if col_tel: asignar_valor_celda(ws, f, col_tel, tel_val)
 
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value is None:
-                        continue
-                    
+            if col_adj:
+                asignar_valor_celda(ws, 4, col_adj, f"I) {informe_generado}")
+                asignar_valor_celda(ws, 5, col_adj, f"II) {oficio_doc}")
+
+            nombre_salida = f"{sigedo_corto or dni or 'notificacion'}_notificacion.xlsx"
+
+        # 2. Reemplazo universal de marcadores y datos residuales de plantilla en todas las celdas
+        marcadores = {
+            "{{DNI}}": str(dni),
+            "{DNI}": str(dni),
+            "{{DESTINATARIO}}": nombres,
+            "{DESTINATARIO}": nombres,
+            "{{NOMBRES}}": nombres,
+            "{NOMBRES}": nombres,
+            "{{BECARIO}}": nombres,
+            "{BECARIO}": nombres,
+            "{{CORREO}}": correo,
+            "{CORREO}": correo,
+            "{{CORREO_ELECTRONICO}}": correo,
+            "{CORREO_ELECTRONICO}": correo,
+            "{{EMAIL}}": correo,
+            "{EMAIL}": correo,
+            "{{SIGEDO}}": str(sigedo_full or sigedo_corto),
+            "{SIGEDO}": str(sigedo_full or sigedo_corto),
+            "{{INFORME}}": f"INFORME Nº {num_inf}",
+            "{INFORME}": f"INFORME Nº {num_inf}",
+            "{{OFICIO}}": oficio_doc,
+            "{OFICIO}": oficio_doc,
+            "{{EXPEDIENTE}}": str(exp_b),
+            "{EXPEDIENTE}": str(exp_b),
+            "{{TELEFONO}}": str(tel_val),
+            "{TELEFONO}": str(tel_val),
+            # Residuos de ejemplo de la plantilla original
+            "78069508": str(dni),
+            "DIEGO CARBAJAL CCORAHUA": nombres,
+            "diegocdacc864@gmail.com": correo,
+        }
+
+        patron_inf = re.compile(r"Informe\s+N[°ºo\.]?\s*\d*-2026-MINEDU/VMGI-PRONABEC-DIBEC(?:-SUS)?", re.IGNORECASE)
+        patron_inf_generico = re.compile(r"Informe\s+N[°ºo\.]?\s*\d+", re.IGNORECASE)
+
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell, MergedCell) or type(cell).__name__ == "MergedCell":
+                    continue
+                if cell.value is None:
+                    continue
+
+                try:
                     texto_original = str(cell.value)
                     
-                    # Reemplazo de SIGEDO residual
+                    # A. Reemplazo de marcadores y residuos conocidos
+                    for tag, replacement in marcadores.items():
+                        if tag in texto_original and replacement:
+                            if texto_original.strip() == tag:
+                                cell.value = int(replacement) if str(replacement).isdigit() and tag in ("{{DNI}}", "{DNI}", "78069508") else replacement
+                                texto_original = str(cell.value)
+                            else:
+                                texto_original = texto_original.replace(tag, str(replacement))
+                                cell.value = texto_original
+
+                    # B. Reemplazo de SIGEDO residual
                     if "59583" in texto_original or "60692" in texto_original:
                         texto_a_reemplazar = "59583" if "59583" in texto_original else "60692"
                         if isinstance(cell.value, (int, float)):
@@ -173,19 +311,20 @@ class GeneradorExcel:
                             cell.value = int(solo_nums) if solo_nums else (int(sigedo_corto) if sigedo_corto.isdigit() else sigedo_corto)
                         else:
                             cell.value = texto_original.replace(texto_a_reemplazar, str(sigedo_corto))
-                    
-                    # Reemplazo de número de informe en celdas numéricas aisladas
-                    if (str(cell.value) in ("6539", "6757", "6541")) and isinstance(cell.value, (int, float)):
+
+                    # C. Reemplazo de número de informe en celdas numéricas aisladas
+                    if (str(cell.value).strip() in ("6539", "6757", "6541")) and isinstance(cell.value, (int, float)):
                         cell.value = int(num_inf) if num_inf.isdigit() else num_inf
-                    
-                    # Reemplazo de cadenas de Informe
+
+                    # D. Reemplazo de cadenas de Informe
                     texto_actual = str(cell.value)
                     if patron_inf.search(texto_actual):
                         cell.value = patron_inf.sub(informe_generado, texto_actual)
                     elif patron_inf_generico.search(texto_actual) and "INFORME" in texto_actual.upper():
                         cell.value = patron_inf_generico.sub(f"Informe Nº {num_inf}", texto_actual)
+                except (AttributeError, TypeError):
+                    pass
 
-            nombre_salida = f"{sigedo_corto or dni or 'notificacion'}_notificacion.xlsx"
 
         salida_dir = get_salida_dir()
         ruta_salida = salida_dir / nombre_salida
@@ -306,9 +445,9 @@ class GeneradorExcel:
             for c in range(1, 12):
                 target_cell = ws.cell(row=fila_actual, column=c)
                 ref_cell = ws.cell(row=fila_base, column=c)
-                if fila_actual != fila_base:
+                if fila_actual != fila_base and not isinstance(target_cell, MergedCell) and type(target_cell).__name__ != "MergedCell":
                     clonar_estilo(ref_cell, target_cell)
-                target_cell.value = valores_fila[c - 1]
+                asignar_valor_celda(ws, fila_actual, c, valores_fila[c - 1])
 
         nombre_salida = f"{sigedo_global}_notificacion_casilla_multiple.xlsx"
         ruta_salida = get_salida_dir() / nombre_salida
@@ -333,8 +472,14 @@ class GeneradorExcel:
         wb = openpyxl.load_workbook(ruta_plantilla)
         ws = wb.active
 
-        fila_base = 3
-        valores_base = [ws.cell(row=fila_base, column=c).value for c in range(1, 14)]
+        # Detección inteligente de fila_base en caso de encabezados combinados (fila 3/4 -> datos en 5)
+        ultima_hdr = 2
+        for r in range(1, 6):
+            fila_vals = [str(ws.cell(row=r, column=c).value or "").strip().upper() for c in range(1, ws.max_column + 1)]
+            if any(any(k in v for k in ("SIGEDO", "DNI", "DESTINATARIO", "N°", "REMITENTE", "CORREO", "ASUNTO", "DOCUMENTO")) for v in fila_vals):
+                ultima_hdr = max(ultima_hdr, r)
+        fila_base = ultima_hdr + 1 if ultima_hdr >= 3 else 3
+        valores_base = [ws.cell(row=fila_base, column=c).value for c in range(1, max(14, ws.max_column + 1))]
 
         filas_necesarias = len(becarios)
 
@@ -421,9 +566,9 @@ class GeneradorExcel:
             for c in range(1, 14):
                 target_cell = ws.cell(row=fila_actual, column=c)
                 ref_cell = ws.cell(row=fila_base, column=c)
-                if fila_actual != fila_base:
+                if fila_actual != fila_base and not isinstance(target_cell, MergedCell) and type(target_cell).__name__ != "MergedCell":
                     clonar_estilo(ref_cell, target_cell)
-                target_cell.value = valores_fila[c - 1]
+                asignar_valor_celda(ws, fila_actual, c, valores_fila[c - 1])
 
         nombre_salida = f"{sigedo_global}_notificacion_multiple.xlsx"
         ruta_salida = get_salida_dir() / nombre_salida

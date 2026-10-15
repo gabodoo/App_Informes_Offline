@@ -1,4 +1,4 @@
-# POLÍTICA ESTRICTA DE PRIVACIDAD Y PROTECCIÓN DE DATOS PERSONALES
+# POLÍTICA ESTRICTA DE PRIVACIDAD, PROTECCIÓN DE DATOS Y ENTORNO SIN PRIVILEGIOS DE ADMINISTRADOR
 
 Esta regla es de obligatorio cumplimiento en todas las sesiones y proyectos:
 
@@ -13,3 +13,10 @@ Esta regla es de obligatorio cumplimiento en todas las sesiones y proyectos:
 3. ROL DEL AGENTE:
    - El agente debe limitarse a analizar, corregir y escribir código fuente (`.py`, etc.).
    - Toda prueba de ejecución con datos reales la realizará exclusivamente el USUARIO de forma local en su propia ventana externa de Windows (PowerShell / interfaz gráfica).
+
+4. ENTORNO SIN PRIVILEGIOS DE ADMINISTRADOR (USUARIO ESTÁNDAR / DOMINIO INSTITUCIONAL):
+   - Los equipos de trabajo pertenecen a un entorno institucional/corporativo (Dominio PRONABEC) donde el usuario **NO cuenta con usuario ni contraseña de administrador**.
+   - Queda terminantemente PROHIBIDO proponer, ejecutar o requerir acciones que disparen el Control de Cuentas de Usuario (UAC) o soliciten credenciales de administrador (tales como binarios con elevación, ejecutables como `language_server_windows_x64.exe`, instaladores a nivel de máquina, cambios en `C:\Program Files`, `C:\Windows`, registro de Windows o variables de sistema).
+   - Toda solución, script batch (`.bat`), entorno de Python (`venv`), compilación portable con PyInstaller y lectura/escritura de archivos debe operar **100% en espacio de usuario** (rutas locales del proyecto, carpetas de usuario `%USERPROFILE%`, Desktop, etc.).
+   - Ante cualquier necesidad de acceso o modificación que el programa requiera, el agente debe emplear siempre alternativas portables sin privilegios elevados.
+
