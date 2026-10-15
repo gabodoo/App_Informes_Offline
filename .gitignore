@@ -17,6 +17,9 @@ dist/
 # Documentos generados y pruebas (No subir datos sensibles)
 Informes_Generados/
 Informes_Generados_Backup/
+Pruebas/
+datos_sensibles/
+output/
 *.pdf
 *.docx
 *.xlsx
@@ -24,9 +27,17 @@ Informes_Generados_Backup/
 *.csv
 *.db
 *.sqlite
+*.sqlite3
+*.log
+error_log.txt
 
-# Excepciones
+# Excepciones (Plantillas oficiales requeridas)
 !plantillas/*.docx
 !plantillas/*.xlsx
 !plantillas/*.xls
 !plantillas/*.bak
+
+# Configuraciones de editor
+.vscode/
+.idea/
+
