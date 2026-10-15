@@ -1,4 +1,4 @@
-﻿---
+---
 name: logica-de-reemplazar
 description: >-
   Logica estandar del proyecto App_Informes_Offline para rellenar/sobrescribir
@@ -180,7 +180,9 @@ Generadas en procesador.py -> generar_concordancias_genero(sexo):
   DEL_BECARIO_A       | de la becaria        | del becario
   A_LA_BECARIO_A      | a la becaria         | al becario
   SEXO_CONECTOR       | presentada por una   | presentado por un
-  SEXO_ARTICULO_1     | 1 becaria            | 1 becario
+  SEXO_ARTICULO_1     | una (1) becaria      | un (1) becario
+  DE_UN_A_BECARIO_A   | de una (1) becaria   | de un (1) becario
+  SEXO_BECARIO_A      | becaria              | becario
 
 ---
 

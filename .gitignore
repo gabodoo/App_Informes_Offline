@@ -37,7 +37,11 @@ error_log.txt
 !plantillas/*.xls
 !plantillas/*.bak
 
-# Configuraciones de editor
+# Configuraciones de editor y asistente local
 .vscode/
 .idea/
+.agents/
+.antigravityignore
+.geminiignore
+GEMINI.md
 
