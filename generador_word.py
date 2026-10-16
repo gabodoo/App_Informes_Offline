@@ -61,8 +61,26 @@ def obtener_ruta_plantilla_multiple() -> Path:
     return BASE_DIR / "plantillas" / "plantilla_informe_multiple.docx"
 
 
+def obtener_ruta_plantilla_no_viable() -> Path:
+    """Busca y retorna la ruta existente de plantilla_informe_no_viable.docx probando múltiples ubicaciones."""
+    rutas_candidatas = [
+        BASE_DIR / "plantillas" / "plantilla_informe_no_viable.docx",
+        BASE_DIR / "plantillas" / "Informe_no_viable.docx",
+        BASE_DIR / "plantillas" / "informe_no_viable.docx",
+        BASE_DIR / "plantillas" / "plantilla_no_viable.docx",
+        BASE_DIR / "dist" / "main" / "plantillas" / "plantilla_informe_no_viable.docx",
+        BASE_DIR / "dist" / "plantillas" / "plantilla_informe_no_viable.docx",
+        Path(__file__).resolve().parent / "plantillas" / "plantilla_informe_no_viable.docx",
+    ]
+    for ruta in rutas_candidatas:
+        if ruta.is_file():
+            return ruta
+    return BASE_DIR / "plantillas" / "plantilla_informe_no_viable.docx"
+
+
 PLANTILLA_PATH = obtener_ruta_plantilla()
 PLANTILLA_MULTIPLE_PATH = obtener_ruta_plantilla_multiple()
+PLANTILLA_NO_VIABLE_PATH = obtener_ruta_plantilla_no_viable()
 SALIDA_DIR = BASE_DIR / "Informes_Generados"
 
 
@@ -732,10 +750,11 @@ class GeneradorWord:
     """Generador híbrido ultra-robusto que aplica docxtpl Y reemplazo directo en python-docx
     cubriendo todas las variantes de sintaxis: {{VAR}}, [VAR], <VAR>, <<VAR>>, ${VAR}, {VAR}."""
 
-    def generar(self, contexto: dict, log: LogCallback | None = None) -> Path:
+    def generar(self, contexto: dict, log: LogCallback | None = None, ruta_plantilla: Path | None = None, sufijo_salida: str = "") -> Path:
         _log = log or (lambda msg: None)
 
-        ruta_plantilla = obtener_ruta_plantilla()
+        if ruta_plantilla is None:
+            ruta_plantilla = obtener_ruta_plantilla()
         if not ruta_plantilla.exists():
             raise FileNotFoundError(
                 f"No se encontró la plantilla en: {ruta_plantilla.resolve()}\n"
@@ -747,7 +766,10 @@ class GeneradorWord:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         sigedo_val = str(contexto.get("NUMERO_SIGEDO", ""))
         sigedo_corto = sigedo_val.split("-")[0] if sigedo_val else f"informe_{ts}"
-        nombre_archivo = f"{sigedo_corto}_informe.docx"
+        if sufijo_salida:
+            nombre_archivo = f"{sigedo_corto}_informe{sufijo_salida}.docx"
+        else:
+            nombre_archivo = f"{sigedo_corto}_informe.docx"
         ruta_salida = SALIDA_DIR / nombre_archivo
 
         _log(f"  Plantilla: {ruta_plantilla.resolve()}")
@@ -862,6 +884,30 @@ class GeneradorWord:
             ],
             "NOMBRE_PRIMERO_NOMBRES": [
                 "NOMBRE_TITULO", "NOMBRE_NOMBRES_PRIMERO"
+            ],
+            "EL_LA_BENEFICIARIO_A": [
+                "BENEFICIARIO_A", "EL_O_LA_BENEFICIARIO", "EL_LA_BENEFICIARIO", "LA_BENEFICIARIA", "EL_BENEFICIARIO"
+            ],
+            "DEL_BENEFICIARIO_A": [
+                "DEL_BENEFICIARIO", "DE_LA_BENEFICIARIA", "DEL_BECARIO_A", "DEL_BECARIO", "DE_LA_BECARIA"
+            ],
+            "DE_UN_A_BENEFICIARIO_A": [
+                "DE_UN_A_BECARIO_A", "DE_UNA_BENEFICIARIA", "DE_UN_BENEFICIARIO", "DE_UN_BECARIO", "DE_UNA_BECARIA"
+            ],
+            "EL_LA_SENOR_A": [
+                "EL_LA_SENOR", "SENOR_A", "EL_SENOR_LA_SENORITA", "SENOR_SENORITA", "SENORITA", "EL_SENOR", "LA_SENORITA"
+            ],
+            "SEXO_CONECTOR_BENEFICIARIO": [
+                "CONECTOR_BENEFICIARIO", "SEXO_CONECTOR_BENEFICIARIA", "SEXO_CONECTOR"
+            ],
+            "CREDITOS_OBLIGATORIOS": [
+                "CREDITOS_OBLIGATORIOS_PENDIENTES", "TOTAL_CREDITOS_OBLIGATORIOS", "CRED_OBLIGATORIOS"
+            ],
+            "CREDITOS_ELECTIVOS": [
+                "CREDITOS_ELECTIVOS_PENDIENTES", "TOTAL_CREDITOS_ELECTIVOS", "CRED_ELECTIVOS"
+            ],
+            "CURSOS_ELECTIVOS_PENDIENTES": [
+                "ELECTIVOS_PENDIENTES", "TEXTO_ELECTIVOS_PENDIENTES", "CURSO_ELECTIVOS"
             ],
         }
 
@@ -1041,6 +1087,10 @@ class GeneradorWord:
             val_de_sexo = "de una (1) becaria" if es_fem else "de un (1) becario"
             val_art_sexo = "una (1) becaria" if es_fem else "un (1) becario"
             val_beca_titulo = str(contexto.get("BECA_TITULO", val_beca))
+            val_de_beneficiario = "de una (1) beneficiaria" if es_fem else "de un (1) beneficiario"
+            val_art_beneficiario = "una (1) beneficiaria" if es_fem else "un (1) beneficiario"
+            val_del_beneficiario = "de la beneficiaria" if es_fem else "del beneficiario"
+            val_conector_beneficiario = "presentado por una (1) beneficiaria" if es_fem else "presentado por un (1) beneficiario"
             
             reemplazos_fallback.extend([
                 ("1 becaria de la Beca 18 - Convocatoria 2021", f"{val_art_sexo} de la {val_beca_titulo}"),
@@ -1061,6 +1111,22 @@ class GeneradorWord:
                 ("1 el becaria", val_art_sexo),
                 ("1 becaria", val_art_sexo),
                 ("1 becario", val_art_sexo),
+                ("de 1 el beneficiario de la Beca 18 - Convocatoria 2021", f"{val_de_beneficiario} de la {val_beca_titulo}"),
+                ("de 1 la beneficiaria de la Beca 18 - Convocatoria 2021", f"{val_de_beneficiario} de la {val_beca_titulo}"),
+                ("de 1 el beneficiario", val_de_beneficiario),
+                ("de 1 la beneficiaria", val_de_beneficiario),
+                ("de 1 beneficiario", val_de_beneficiario),
+                ("de 1 beneficiaria", val_de_beneficiario),
+                ("1 el beneficiario", val_art_beneficiario),
+                ("1 la beneficiaria", val_art_beneficiario),
+                ("1 beneficiario", val_art_beneficiario),
+                ("1 beneficiaria", val_art_beneficiario),
+                ("del el beneficiario", val_del_beneficiario),
+                ("del el becario", "de la becaria" if es_fem else "del becario"),
+                ("presentado por un beneficiario", val_conector_beneficiario),
+                ("presentada por una beneficiaria", "presentada por una (1) beneficiaria"),
+                ("por un beneficiario", "por una (1) beneficiaria" if es_fem else "por un (1) beneficiario"),
+                ("por una beneficiaria", "por una (1) beneficiaria"),
             ])
         val_fsol = str(contexto.get("FECHA_SOLICITUD_TEXTO") or "").strip()
         if val_fsol and val_fsol != "(no detectada)":
@@ -1198,16 +1264,28 @@ class GeneradorWord:
 
             # Corrección gramatical y de concordancia en cualquier párrafo:
             # Eliminar pronombre 'la' / 'el' después de 1 y colocar 'una (1)' / 'un (1)'
+            texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?beneficiari[oa]\b", val_de_beneficiario, texto_nuevo, flags=re.I)
             texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)beneficiari[oa]\b", val_art_beneficiario, texto_nuevo, flags=re.I)
             texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\b1\s+beneficiari[oa]\b", val_art_beneficiario, texto_nuevo, flags=re.I)
             texto_nuevo = re.sub(r"\b1\s+becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\bdel\s+el\s+beneficiari[oa]\b", val_del_beneficiario, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\bdel\s+la\s+beneficiaria\b", "de la beneficiaria", texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\bdel\s+el\s+becari[oa]\b", val_del_beneficiario, texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\bde\s+el\s+beneficiario\b", "del beneficiario", texto_nuevo, flags=re.I)
+            texto_nuevo = re.sub(r"\bde\s+el\s+becario\b", "del becario", texto_nuevo, flags=re.I)
 
             # Ajuste solicitado: en el numeral 2.1 debe decir 'de una (1) becaria' (o 'de un (1) becario')
             # y 'Beca 18' (Primera letra mayúscula, lo demás minúscula), exclusivamente en 2.1
             if es_numeral_21:
                 texto_nuevo = re.sub(r"\bBECA\s+(\d+|[A-Za-záéíóúÁÉÍÓÚ]+)\b", r"Beca \1", texto_nuevo)
+                texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?beneficiari[oa]\b", val_de_beneficiario, texto_nuevo, flags=re.I)
                 texto_nuevo = re.sub(r"\bde\s+1\s+(?:la\s+|el\s+)?becari[oa]\b", val_de_sexo, texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)?beneficiari[oa]\b", val_art_beneficiario, texto_nuevo, flags=re.I)
                 texto_nuevo = re.sub(r"\b1\s+(?:la\s+|el\s+)?becari[oa]\b", val_art_sexo, texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\bde\s+la\s+beneficiaria\s+de\s+la\s+Beca\b", f"{val_de_beneficiario} de la Beca", texto_nuevo, flags=re.I)
+                texto_nuevo = re.sub(r"\bdel\s+beneficiario\s+de\s+la\s+Beca\b", f"{val_de_beneficiario} de la Beca", texto_nuevo, flags=re.I)
                 texto_nuevo = re.sub(r"\bde\s+la\s+becaria\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", texto_nuevo, flags=re.I)
                 texto_nuevo = re.sub(r"\bdel\s+becario\s+de\s+la\s+Beca\b", f"{val_de_sexo} de la Beca", texto_nuevo, flags=re.I)
 
@@ -1673,11 +1751,13 @@ class GeneradorWord:
         if parrafo_objetivo is not None:
             siguiente = parrafo_objetivo.getnext()
             while siguiente is not None and siguiente.tag.endswith('}p'):
-                # Solo eliminar si es un parrafo de lista numerada (tiene numPr) y esta vacio
+                # Solo eliminar si es un parrafo de lista numerada (tiene numPr) y esta vacio o residuo de electivos
                 p_texto = "".join(t.text or "" for t in siguiente.iter(qn("w:t"))).strip()
                 p_pPr = siguiente.find(qn("w:pPr"))
                 p_numPr = p_pPr.find(qn("w:numPr")) if p_pPr is not None else None
-                if p_numPr is not None and not p_texto:
+                es_seccion_b = bool(re.search(r"^\s*b\s*[\)\.]", p_texto, re.IGNORECASE)) or bool(re.search(r"Cr[eé]ditos\s+electivos", p_texto, re.IGNORECASE))
+                es_residuo_electivo = not es_seccion_b and (bool(re.search(r"^\s*(?:\d+\.\s+)?Electivo\(s\)[:\s]+Pendiente\b", p_texto, re.IGNORECASE)) or "{{ CURSOS_ELECTIVOS_PENDIENTES }}" in p_texto)
+                if ((p_numPr is not None and not p_texto) or es_residuo_electivo) and not es_seccion_b:
                     siguiente_sig = siguiente.getnext()
                     siguiente.getparent().remove(siguiente)
                     siguiente = siguiente_sig
@@ -1747,6 +1827,151 @@ class GeneradorWord:
             insert_after = p_nuevo
 
         doc.save(ruta_docx)
+
+
+    def generar_no_viable(self, contexto: dict, log: LogCallback | None = None) -> Path:
+        """Genera el informe Word para la modalidad No Viable usando su plantilla específica si existe,
+        o la plantilla base como fallback provisional."""
+        _log = log or (lambda msg: None)
+        ruta_plantilla = obtener_ruta_plantilla_no_viable()
+        if not ruta_plantilla.exists():
+            _log("  [AVISO] No se encontró 'plantilla_informe_no_viable.docx'. Se utilizará la plantilla individual como base provisional.")
+            ruta_plantilla = obtener_ruta_plantilla()
+
+        ruta_salida = self.generar(contexto, log=_log, ruta_plantilla=ruta_plantilla, sufijo_salida="_No_Viable")
+        self._ajustar_conectores_no_viable(ruta_salida, contexto, log=_log)
+        return ruta_salida
+
+    def _ajustar_conectores_no_viable(self, ruta_docx: Path, contexto: dict, log: LogCallback | None = None) -> None:
+        """Post-procesamiento de seguridad para informe No Viable:
+        Asegura que en Asunto, 2.1 y 3.1 se emplee 'beneficiario/a' con '(1)',
+        en 2.1 'de un (1) beneficiario' / 'de una (1) beneficiaria',
+        en 2.12 'del beneficiario' / 'de la beneficiaria' (eliminando 'del el beneficiario'),
+        y al final de cursos el texto de créditos electivos pendientes."""
+        _log = log or (lambda msg: None)
+        try:
+            doc = Document(ruta_docx)
+            sexo_str = str(contexto.get("SEXO") or contexto.get("GENERO") or "").strip().upper()
+            es_fem = sexo_str.startswith("F") or sexo_str in ("2", "MUJER", "FEMENINO")
+
+            val_conector = "presentado por una (1) beneficiaria" if es_fem else "presentado por un (1) beneficiario"
+            val_de_beneficiario = "de una (1) beneficiaria" if es_fem else "de un (1) beneficiario"
+            val_del_beneficiario = "de la beneficiaria" if es_fem else "del beneficiario"
+            val_beneficiario = "la beneficiaria" if es_fem else "el beneficiario"
+            val_senor = "la señorita" if es_fem else "el señor"
+            val_del_senor = "de la señorita" if es_fem else "del señor"
+
+            cred_obli_ctx = contexto.get("CREDITOS_OBLIGATORIOS") or contexto.get("creditos_obligatorios", "")
+            cred_elec_ctx = contexto.get("CREDITOS_ELECTIVOS") or contexto.get("creditos_electivos", "")
+            val_cred_obli = str(cred_obli_ctx).strip() if cred_obli_ctx is not None else "0"
+            val_cred_elec = str(cred_elec_ctx).strip() if cred_elec_ctx is not None else "0"
+
+            seccion = "HEADER"
+            modificado = False
+
+            def _procesar_p(p):
+                nonlocal seccion, modificado
+                txt = p.text or ""
+                t_clean = re.sub(r"\s+", " ", txt).strip()
+                if not t_clean:
+                    return
+
+                # Detectar sección o numeral
+                if re.search(r"^\s*ASUNTO\b", t_clean, re.IGNORECASE) or ("ASUNTO" in t_clean.upper() and ("AMPLIACI" in t_clean.upper() or "PERIODO" in t_clean.upper())):
+                    seccion = "ASUNTO"
+                elif re.search(r"(?:^|[\s\.\b])2\.1[\.\s]", t_clean) or ("Subdirección de Coordinación" in t_clean and "traslada la solicitud" in t_clean):
+                    seccion = "2.1"
+                elif re.search(r"(?:^|[\s\.\b])2\.12[\.\s]", t_clean) or ("situación de cursos pendientes" in t_clean.lower()):
+                    seccion = "2.12"
+                elif re.search(r"(?:^|[\s\.\b])2\.[2-9][\.\s]", t_clean):
+                    seccion = "OTROS"
+                elif re.search(r"(?:^|[\s\.\b])3\.1[\.\s]", t_clean):
+                    seccion = "3.1"
+                elif re.search(r"(?:^|[\s\.\b])(?:3\.[2-9]|[4-9]\.\d*)[\.\s]", t_clean):
+                    seccion = "OTROS"
+
+                txt_nuevo = txt
+
+                # 1. Correcciones universales para 'del el beneficiario' y concordancias erróneas
+                txt_nuevo = re.sub(r"\bdel\s+el\s+(?:beneficiari[oa]|becari[oa])\b", val_del_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+                txt_nuevo = re.sub(r"\bdel\s+la\s+(?:beneficiaria|becaria)\b", "de la beneficiaria", txt_nuevo, flags=re.IGNORECASE)
+                txt_nuevo = re.sub(r"\bde\s+el\s+(?:beneficiario|becario)\b", "del beneficiario", txt_nuevo, flags=re.IGNORECASE)
+
+                # 2. Correcciones en ASUNTO
+                if seccion == "ASUNTO":
+                    txt_nuevo = re.sub(r"\bpresentad[oa]\s+por\s+(?:un[a]?\s+)?(?:\(1\)\s+)?(?:becari[oa]|beneficiari[oa])\b", val_conector, txt_nuevo, flags=re.IGNORECASE)
+                    txt_nuevo = re.sub(r"\bpor\s+un[a]?\s+(?:\(1\)\s+)?beneficiari[oa]\b", "por una (1) beneficiaria" if es_fem else "por un (1) beneficiario", txt_nuevo, flags=re.IGNORECASE)
+                    txt_nuevo = re.sub(r"\bpresentad[oa]\s+presentad[oa]\b", "presentado", txt_nuevo, flags=re.IGNORECASE)
+
+                # 3. Correcciones en numeral 2.1
+                elif seccion == "2.1":
+                    txt_nuevo = re.sub(r"\bde\s+1\s+(?:el\s+|la\s+)?(?:beneficiari[oa]|becari[oa])\b", val_de_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+                    txt_nuevo = re.sub(r"\bde\s+(?:un[a]?\s+)?(?:\(1\)\s+)?(?:el\s+|la\s+)?(?:beneficiari[oa]|becari[oa])\b", val_de_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+                    txt_nuevo = re.sub(r"\b(?:de\s+la|del)\s+(?:beneficiari[oa]|becari[oa])\s+de\s+la\s+Beca\b", f"{val_de_beneficiario} de la Beca", txt_nuevo, flags=re.IGNORECASE)
+                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+
+                # 4. Correcciones en numeral 2.12
+                elif seccion == "2.12":
+                    txt_nuevo = re.sub(r"\b(?:del\s+el|del|de\s+la|de\s+el)\s+(?:beneficiari[oa]|becari[oa])\b", val_del_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+
+                # 5. Correcciones en numeral 3.1
+                elif seccion == "3.1":
+                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_beneficiario, txt_nuevo, flags=re.IGNORECASE)
+
+                # 6. Otros numerales
+                else:
+                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_senor, txt_nuevo, flags=re.IGNORECASE)
+
+                # 7. Reemplazo de marcadores Jinja o residuales no resueltos
+                txt_nuevo = txt_nuevo.replace("{{ DEL_BENEFICIARIO_A }}", val_del_beneficiario)
+                txt_nuevo = txt_nuevo.replace("{{ DE_UN_A_BENEFICIARIO_A }}", val_de_beneficiario)
+                txt_nuevo = txt_nuevo.replace("{{ SEXO_CONECTOR_BENEFICIARIO }}", val_conector)
+                txt_nuevo = txt_nuevo.replace("{{ CREDITOS_OBLIGATORIOS }}", val_cred_obli)
+                txt_nuevo = txt_nuevo.replace("{{ CREDITOS_ELECTIVOS }}", val_cred_elec)
+                txt_nuevo = txt_nuevo.replace("{{CREDITOS_OBLIGATORIOS}}", val_cred_obli)
+                txt_nuevo = txt_nuevo.replace("{{CREDITOS_ELECTIVOS}}", val_cred_elec)
+                txt_nuevo = txt_nuevo.replace("{{ CURSOS_ELECTIVOS_PENDIENTES }}", "")
+
+                if txt_nuevo != txt:
+                    if len(p.runs) <= 1:
+                        if p.runs:
+                            p.runs[0].text = txt_nuevo
+                        else:
+                            p.text = txt_nuevo
+                    else:
+                        r0 = p.runs[0]
+                        f_name = r0.font.name
+                        f_size = r0.font.size
+                        f_bold = r0.bold
+                        f_italic = r0.italic
+                        p.text = txt_nuevo
+                        if p.runs:
+                            p.runs[0].font.name = f_name
+                            p.runs[0].font.size = f_size
+                            p.runs[0].bold = f_bold
+                            p.runs[0].italic = f_italic
+                    modificado = True
+
+            for p in doc.paragraphs:
+                _procesar_p(p)
+
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for p in cell.paragraphs:
+                            _procesar_p(p)
+
+            for sec in doc.sections:
+                for p in sec.header.paragraphs:
+                    _procesar_p(p)
+                for p in sec.footer.paragraphs:
+                    _procesar_p(p)
+
+            if modificado:
+                doc.save(ruta_docx)
+                _log("  Post-procesamiento de conectores No Viable completado exitosamente.")
+        except Exception as e:
+            _log(f"  [AVISO post-procesamiento No Viable]: {e}")
 
 
     def generar_informe_multiple(self, super_contexto: dict, log_callback=None) -> Path:

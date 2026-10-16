@@ -51,6 +51,14 @@ class AppInformes(ctk.CTk):
         self._ruta_calendario_academico = tk.StringVar()
         self._ruta_documento_ies = tk.StringVar()
 
+        # Variables No Viable (Ampliaciones)
+        self._nro_informe_nv = tk.StringVar()
+        self._ruta_excel_nv = tk.StringVar()
+        self._ruta_formato_autogenerado_nv = tk.StringVar()
+        self._ruta_informe_succor_nv = tk.StringVar()
+        self._ruta_calendario_academico_nv = tk.StringVar()
+        self._ruta_documento_ies_nv = tk.StringVar()
+
         # Variables Múltiple (Ampliaciones)
         self._nro_informe_mult = tk.StringVar()
         self._ruta_excel_mult = tk.StringVar()
@@ -158,6 +166,18 @@ class AppInformes(ctk.CTk):
         )
         self.btn_multiple.pack(fill="x", pady=2, padx=(10, 10))
 
+        self.btn_no_viable = ctk.CTkButton(
+            self.frame_submenu_ampliaciones,
+            text="    ✎ No Viable",
+            fg_color="transparent",
+            text_color=self.COLOR_TEXTO_OSCURO,
+            anchor="w",
+            hover_color="#f0f0f0",
+            font=ctk.CTkFont(size=13),
+            command=lambda: self._cambiar_modo("no_viable")
+        )
+        self.btn_no_viable.pack(fill="x", pady=2, padx=(10, 10))
+
 
         # --- Header Azul (Top Bar) ---
         header = ctk.CTkFrame(self, fg_color=self.COLOR_AZUL_OSCURO, corner_radius=0, height=60)
@@ -200,6 +220,10 @@ class AppInformes(ctk.CTk):
         # Vista Individual
         self.frames["individual"] = self._construir_vista_individual(self.main_container)
         self.frames["individual"].grid(row=0, column=0, sticky="nsew")
+
+        # Vista No Viable
+        self.frames["no_viable"] = self._construir_vista_no_viable(self.main_container)
+        self.frames["no_viable"].grid(row=0, column=0, sticky="nsew")
         
         # Vista Múltiple
         self.frames["multiple"] = self._construir_vista_multiple(self.main_container)
@@ -263,7 +287,7 @@ class AppInformes(ctk.CTk):
                 self.frame_submenu_ampliaciones.pack(after=self.btn_ampliaciones, fill="x", pady=(0, 5), padx=0)
                 self._menu_ampliaciones_abierto = True
             self.btn_ampliaciones.configure(text="📁 Ampliaciones  ▼")
-            if self._modo_actual not in ("individual", "multiple"):
+            if self._modo_actual not in ("individual", "multiple", "no_viable"):
                 self._cambiar_modo("individual")
         else:
             if self._menu_ampliaciones_abierto:
@@ -283,6 +307,7 @@ class AppInformes(ctk.CTk):
         self.btn_ampliaciones.configure(text_color=self.COLOR_TEXTO_OSCURO)
         self.btn_individual.configure(text_color=self.COLOR_TEXTO_OSCURO)
         self.btn_multiple.configure(text_color=self.COLOR_TEXTO_OSCURO)
+        self.btn_no_viable.configure(text_color=self.COLOR_TEXTO_OSCURO)
 
         if self._modo_actual == "suspendido_regular":
             if not self._menu_actualizacion_abierto:
@@ -301,6 +326,23 @@ class AppInformes(ctk.CTk):
             if not self._procesando:
                 self._btn_generar.configure(state="normal")
             self._lbl_estado.configure(text="Estado: Listo (Modo Individual)")
+            if not self._ruta_excel.get():
+                padron_existente = self._ruta_excel_nv.get() or self._ruta_excel_mult.get() or self._ruta_excel_act.get()
+                if padron_existente:
+                    self._ruta_excel.set(padron_existente)
+
+        elif self._modo_actual == "no_viable":
+            if not self._menu_ampliaciones_abierto:
+                self._toggle_menu_ampliaciones(abrir=True)
+            self.btn_ampliaciones.configure(text_color=self.COLOR_AZUL_OSCURO)
+            self.btn_no_viable.configure(text_color=self.COLOR_ROSA)
+            if not self._procesando:
+                self._btn_generar.configure(state="normal")
+            self._lbl_estado.configure(text="Estado: Listo (Modo No Viable)")
+            if not self._ruta_excel_nv.get():
+                padron_existente = self._ruta_excel.get() or self._ruta_excel_mult.get() or self._ruta_excel_act.get()
+                if padron_existente:
+                    self._ruta_excel_nv.set(padron_existente)
 
         elif self._modo_actual == "multiple":
             if not self._menu_ampliaciones_abierto:
@@ -407,6 +449,27 @@ class AppInformes(ctk.CTk):
         self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Informe SUCCOR (.pdf)", variable=self._ruta_informe_succor, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR del becario...")
         self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
         self._crear_fila_seleccion(scrollable_frame, fila=5, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies, comando=lambda: self._seleccionar_archivo(self._ruta_documento_ies, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("PDF", "*.pdf"), ("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta emitida por la IES (.pdf o .xlsx)...")
+        
+        return frame
+
+    def _construir_vista_no_viable(self, parent) -> ctk.CTkFrame:
+        frame = ctk.CTkFrame(parent, fg_color=self.COLOR_FONDO_BLANCO)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+        
+        scrollable_frame = ctk.CTkScrollableFrame(frame, fg_color=self.COLOR_FONDO_BLANCO, border_width=1, border_color=self.COLOR_BORDE, corner_radius=0)
+        scrollable_frame.grid(row=0, column=0, sticky="nsew")
+        scrollable_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(scrollable_frame, text="Nro. Informe (No Viable)", font=ctk.CTkFont(size=13, weight="bold"), text_color=self.COLOR_TEXTO_OSCURO).grid(row=0, column=0, padx=15, pady=(15, 8), sticky="w")
+        nro_entry = ctk.CTkEntry(scrollable_frame, textvariable=self._nro_informe_nv, placeholder_text="Ej: 6348", height=34, border_color=self.COLOR_BORDE, corner_radius=2, fg_color="#fcfcfc")
+        nro_entry.grid(row=0, column=1, sticky="w", padx=(0, 15), pady=(15, 8))
+
+        self._crear_fila_seleccion(scrollable_frame, fila=1, etiqueta="Cargar padrón (.xlsx)", variable=self._ruta_excel_nv, comando=lambda: self._seleccionar_archivo(self._ruta_excel_nv, "Padrón (Excel)", [("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Padrón/Base de datos de becarios...")
+        self._crear_fila_seleccion(scrollable_frame, fila=2, etiqueta="Formato autogenerado (.pdf)", variable=self._ruta_formato_autogenerado_nv, comando=lambda: self._seleccionar_archivo(self._ruta_formato_autogenerado_nv, "Formato autogenerado", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="PDF con fecha/hora de ingreso...")
+        self._crear_fila_seleccion(scrollable_frame, fila=3, etiqueta="Informe SUCCOR (.pdf)", variable=self._ruta_informe_succor_nv, comando=lambda: self._seleccionar_archivo(self._ruta_informe_succor_nv, "Informe SUCCOR", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Informe SUCCOR del becario...")
+        self._crear_fila_seleccion(scrollable_frame, fila=4, etiqueta="Calendario académico (.pdf)", variable=self._ruta_calendario_academico_nv, comando=lambda: self._seleccionar_archivo(self._ruta_calendario_academico_nv, "Calendario académico", [("PDF", "*.pdf"), ("Todos", "*.*")]), placeholder="Calendario académico de la IES...")
+        self._crear_fila_seleccion(scrollable_frame, fila=5, etiqueta="Documento de la IES (.pdf/.xlsx)", variable=self._ruta_documento_ies_nv, comando=lambda: self._seleccionar_archivo(self._ruta_documento_ies_nv, "Documento IES", [("PDF o Excel", "*.pdf *.xlsx *.xls"), ("PDF", "*.pdf"), ("Excel", "*.xlsx *.xls"), ("Todos", "*.*")]), placeholder="Documento/Carta emitida por la IES (.pdf o .xlsx)...")
         
         return frame
 
@@ -665,6 +728,12 @@ class AppInformes(ctk.CTk):
             self._ruta_informe_succor.set("")
             self._ruta_calendario_academico.set("")
             self._ruta_documento_ies.set("")
+        elif self._modo_actual == "no_viable":
+            self._nro_informe_nv.set("")
+            self._ruta_formato_autogenerado_nv.set("")
+            self._ruta_informe_succor_nv.set("")
+            self._ruta_calendario_academico_nv.set("")
+            self._ruta_documento_ies_nv.set("")
         elif self._modo_actual == "suspendido_regular":
             self._nro_informe_act.set("")
             self._ruta_informe_succor_act.set("")
@@ -706,7 +775,7 @@ class AppInformes(ctk.CTk):
         self.after(0, _actualizar)
 
     def _validar_entradas(self) -> bool:
-        if self._modo_actual not in ("individual", "multiple", "suspendido_regular"):
+        if self._modo_actual not in ("individual", "multiple", "suspendido_regular", "no_viable"):
             messagebox.showwarning("Seleccione una opción", "Por favor seleccione una opción del menú lateral.")
             return False
 
@@ -728,6 +797,45 @@ class AppInformes(ctk.CTk):
             if not resoluciones_cargadas:
                 messagebox.showwarning("Datos incompletos", "Debe cargar al menos 1 Resolución en PDF.")
                 return False
+            return True
+
+        elif self._modo_actual == "no_viable":
+            if not self._nro_informe_nv.get().strip():
+                messagebox.showwarning("Datos incompletos", "Por favor ingrese el Nro. de Informe a generar.")
+                return False
+
+            campos = [
+                (self._ruta_excel_nv, "Padrón de becarios (.xlsx)"),
+                (self._ruta_formato_autogenerado_nv, "Formato autogenerado (.pdf)"),
+                (self._ruta_informe_succor_nv, "Informe SUCCOR (.pdf)"),
+                (self._ruta_calendario_academico_nv, "Calendario académico (.pdf)"),
+                (self._ruta_documento_ies_nv, "Documento de la IES (.pdf/.xlsx)"),
+            ]
+            for var, nombre in campos:
+                if not var.get().strip():
+                    messagebox.showwarning("Datos incompletos", f"Cargue el archivo: {nombre}")
+                    return False
+
+            from generador_word import PLANTILLA_NO_VIABLE_PATH, PLANTILLA_PATH
+            plantilla_nv = PLANTILLA_NO_VIABLE_PATH if PLANTILLA_NO_VIABLE_PATH.exists() else PLANTILLA_PATH
+            if not plantilla_nv.exists():
+                messagebox.showerror(
+                    "Plantilla no encontrada",
+                    f"No se encontró el archivo de plantilla Word en:\n{PLANTILLA_NO_VIABLE_PATH.resolve()}\n\n"
+                    "Por favor coloque el archivo 'plantilla_informe_no_viable.docx' o 'plantilla_informe.docx' dentro de la carpeta 'plantillas'.",
+                )
+                return False
+
+            from generador_excel import obtener_ruta_plantilla_acto_administrativo
+            plantilla_excel_nv = obtener_ruta_plantilla_acto_administrativo()
+            if not plantilla_excel_nv.exists():
+                messagebox.showerror(
+                    "Plantilla no encontrada",
+                    f"No se encontró el archivo de plantilla Excel en:\n{plantilla_excel_nv.resolve()}\n\n"
+                    "Por favor coloque el archivo 'plantilla_notificacion_acto_administrativo.xlsx' dentro de la carpeta 'plantillas'.",
+                )
+                return False
+
             return True
 
         if self._modo_actual == "individual":
@@ -787,7 +895,7 @@ class AppInformes(ctk.CTk):
     def _iniciar_generacion(self) -> None:
         if self._procesando:
             return
-        if self._modo_actual not in ("individual", "multiple", "suspendido_regular"):
+        if self._modo_actual not in ("individual", "multiple", "suspendido_regular", "no_viable"):
             messagebox.showinfo("Información", "Seleccione una opción válida para generar informes.")
             return
         if not self._validar_entradas():
@@ -802,6 +910,8 @@ class AppInformes(ctk.CTk):
         
         if self._modo_actual == "individual":
             nro = self._nro_informe.get().strip()
+        elif self._modo_actual == "no_viable":
+            nro = self._nro_informe_nv.get().strip()
         elif self._modo_actual == "suspendido_regular":
             nro = self._nro_informe_act.get().strip()
         else:
@@ -826,6 +936,20 @@ class AppInformes(ctk.CTk):
                     nro_informe=self._nro_informe.get().strip()
                 )
                 res = procesador.ejecutar()
+                rutas_generadas = [res] if isinstance(res, Path) else (list(res) if res else [])
+            elif self._modo_actual == "no_viable":
+                procesador = ProcesadorInformes(
+                    ruta_excel=self._ruta_excel_nv.get(),
+                    ruta_formato_autogenerado=self._ruta_formato_autogenerado_nv.get(),
+                    ruta_informe_succor=self._ruta_informe_succor_nv.get(),
+                    ruta_calendario_academico=self._ruta_calendario_academico_nv.get(),
+                    ruta_documento_ies=self._ruta_documento_ies_nv.get(),
+                    log=self._log,
+                    progreso=self._actualizar_progreso,
+                    nro_informe=self._nro_informe_nv.get().strip(),
+                    es_no_viable=True
+                )
+                res = procesador.ejecutar_no_viable()
                 rutas_generadas = [res] if isinstance(res, Path) else (list(res) if res else [])
             elif self._modo_actual == "suspendido_regular":
                 from procesador_actualizacion import ProcesadorActualizacionSuspendido

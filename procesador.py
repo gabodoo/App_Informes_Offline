@@ -433,14 +433,22 @@ class ExtractorFormatoAutogenerado:
         if m_exp:
             resultado["numero_expediente"] = m_exp.group(1).strip()
             
+        # Detección exhaustiva de correo electrónico en formato autogenerado
         m_corr = cls.PATRON_CORREO.search(texto_completo)
         if m_corr:
             resultado["correo_electronico"] = m_corr.group(1).strip()
         else:
-            m_gen = re.search(r"(?:correo(?:\s+electr[oó]nico)?|email|e-mail)\s*[:\-\s]+\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})", texto_completo, re.IGNORECASE)
-            if m_gen:
-                resultado["correo_electronico"] = m_gen.group(1).strip()
-            else:
+            patrones_correo_alt = [
+                r"Autorizo\s+(?:a\s+)?recibir\s+(?:la\s+)?(?:respuesta|notificaci[oó]n)\s+(?:al|por|a\s+la)\s+correo\s+electr[oó]nico\s*[:\s]+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+                r"(?:correo(?:\s+electr[oó]nico)?|email|e-mail)\s*(?:personal|contacto|del\s+solicitante|del\s+remitente)?\s*[:\-\s|]+\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+                r"(?:correo(?:\s+electr[oó]nico)?|email|e-mail)\s*[\r\n]+\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+            ]
+            for p_corr in patrones_correo_alt:
+                m_alt = re.search(p_corr, texto_completo, re.IGNORECASE)
+                if m_alt:
+                    resultado["correo_electronico"] = m_alt.group(1).strip()
+                    break
+            if not resultado["correo_electronico"]:
                 todos_correos = re.findall(r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b", texto_completo)
                 validos = [c.strip() for c in todos_correos if not any(dom in c.lower() for dom in ("pronabec.gob.pe", "minedu.gob.pe"))]
                 if validos:
@@ -517,9 +525,21 @@ class ExtractorFormatoAutogenerado:
     def extraer(cls, ruta_pdf: str | Path) -> dict:
         ruta = Path(ruta_pdf)
         with pdfplumber.open(ruta) as pdf:
-            texto_completo = "\n".join(
-                p.extract_text() or "" for p in pdf.pages
-            )
+            partes = []
+            for p in pdf.pages:
+                txt = p.extract_text() or ""
+                if txt:
+                    partes.append(txt)
+                try:
+                    tbls = p.extract_tables() or []
+                    for t in tbls:
+                        for row in t:
+                            for cell in row:
+                                if cell and "@" in str(cell):
+                                    partes.append(str(cell).strip())
+                except Exception:
+                    pass
+            texto_completo = "\n".join(partes)
         return cls.extraer_desde_texto(texto_completo)
 
     @classmethod
@@ -726,7 +746,7 @@ class ExtractorInformeSuccor:
         return nom
 
     @classmethod
-    def extraer(cls, ruta_pdf: str | Path) -> dict:
+    def extraer(cls, ruta_pdf: str | Path, validar_no_culmina: bool = True) -> dict:
         ruta = Path(ruta_pdf)
         resultado = {
             "nombre_informe_succor": "",
@@ -782,7 +802,9 @@ class ExtractorInformeSuccor:
             re.IGNORECASE
         )
         if patron_no_culmina.search(texto_completo):
-            raise BecarioNoCulminariaAmpliacionException("En el Informe de la SUCCOR se señala que el becario no culminaria estudios con la ampliacion. Revisar el contenido de dicho Informe")
+            resultado["indica_no_culmina"] = True
+            if validar_no_culmina:
+                raise BecarioNoCulminariaAmpliacionException("En el Informe de la SUCCOR se señala que el becario no culminaria estudios con la ampliacion. Revisar el contenido de dicho Informe")
 
         # Texto unificado para manejar cortes de línea en códigos oficiales
         texto_unido = re.sub(r"([/\-])\s*[\r\n]+\s*", r"\1", texto_completo)
@@ -1637,8 +1659,8 @@ class ExtractorDocumentoIESExcel:
         return unicos
 
     @classmethod
-    def parse_creditos_electivos(cls, val: Any) -> float:
-        """Parsea el valor de créditos electivos pendientes a float."""
+    def parse_creditos(cls, val: Any) -> float:
+        """Parsea el valor de créditos pendientes (obligatorios o electivos) a float."""
         if val is None or pd.isna(val):
             return 0.0
         val_str = str(val).strip()
@@ -1647,13 +1669,16 @@ class ExtractorDocumentoIESExcel:
         try:
             return float(val_str.replace(",", "."))
         except (ValueError, TypeError):
-            m = re.search(r"(\d+(?:\.\d+)?)", val_str)
+            m = re.search(r"(\d+(?:[\.,]\d+)?)", val_str)
             if m:
                 try:
-                    return float(m.group(1))
+                    return float(m.group(1).replace(",", "."))
                 except (ValueError, TypeError):
                     return 0.0
             return 0.0
+
+    parse_creditos_electivos = parse_creditos
+    parse_creditos_obligatorios = parse_creditos
 
     @classmethod
     def extraer_bloques_estudiantes(cls, ruta_excel: str | Path, log: LogCallback | None = None) -> list[dict]:
@@ -1710,26 +1735,55 @@ class ExtractorDocumentoIESExcel:
                 if not col_cursos or mejor_puntaje < 4:
                     col_cursos = next((c for c in df_sheet.columns if "CURSO" in cls._norm(c) and "PENDIENTE" in cls._norm(c) and "N" not in cls._norm(c)), None)
 
+                # Detección columna créditos obligatorios pendientes
+                col_obligatorios = None
+                for c in df_sheet.columns:
+                    c_n = cls._norm(c)
+                    if "TOTAL DE CREDITOS OBLIGATORIOS PENDIENTES PARA CULMINAR LA CARRERA" in c_n:
+                        col_obligatorios = c
+                        break
+                if not col_obligatorios:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "CREDITO" in c_n and "OBLIGATORIO" in c_n and "PENDIENTE" in c_n:
+                            col_obligatorios = c
+                            break
+                if not col_obligatorios:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "OBLIGATORIO" in c_n and "PENDIENTE" in c_n:
+                            col_obligatorios = c
+                            break
+                if not col_obligatorios:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "CREDITO" in c_n and "OBLIGATORIO" in c_n and not any(w in c_n for w in ["APROBADO", "TOTAL"]):
+                            col_obligatorios = c
+                            break
+
                 # Detección columna créditos electivos pendientes
                 col_electivos = None
-                # Prioridad 1: Coincidencia con TOTAL DE CREDITOS ELECTIVOS PENDIENTES PARA CULMINAR LA CARRERA
                 for c in df_sheet.columns:
                     c_n = cls._norm(c)
                     if "TOTAL DE CREDITOS ELECTIVOS PENDIENTES PARA CULMINAR LA CARRERA" in c_n:
                         col_electivos = c
                         break
-                # Prioridad 2: CREDITOS + ELECTIVOS + PENDIENTES
                 if not col_electivos:
                     for c in df_sheet.columns:
                         c_n = cls._norm(c)
                         if "CREDITO" in c_n and "ELECTIVO" in c_n and "PENDIENTE" in c_n:
                             col_electivos = c
                             break
-                # Prioridad 3: ELECTIVOS + PENDIENTES (excluyendo si culminaría o matriculado)
                 if not col_electivos:
                     for c in df_sheet.columns:
                         c_n = cls._norm(c)
                         if "ELECTIVO" in c_n and "PENDIENTE" in c_n and not any(w in c_n for w in ["CULMINAR", "MATRICU"]):
+                            col_electivos = c
+                            break
+                if not col_electivos:
+                    for c in df_sheet.columns:
+                        c_n = cls._norm(c)
+                        if "CREDITO" in c_n and "ELECTIVO" in c_n and not any(w in c_n for w in ["APROBADO", "TOTAL"]):
                             col_electivos = c
                             break
 
@@ -1740,8 +1794,10 @@ class ExtractorDocumentoIESExcel:
                     s_val = str(row[col_sig]).strip().split(".")[0] if col_sig else ""
                     c_val = str(row[col_cursos]).strip() if col_cursos else ""
                     car_val = str(row[col_car]).strip() if col_car else ""
+                    o_raw = row[col_obligatorios] if col_obligatorios else None
+                    cred_obli = cls.parse_creditos(o_raw)
                     e_raw = row[col_electivos] if col_electivos else None
-                    cred_elec = cls.parse_creditos_electivos(e_raw)
+                    cred_elec = cls.parse_creditos(e_raw)
 
                     if d_val or (n_val and n_val.lower() != "nan" and len(cls._norm(n_val)) > 3):
                         if current_student:
@@ -1755,11 +1811,14 @@ class ExtractorDocumentoIESExcel:
                             "sigedo": s_val,
                             "carrera": car_val if car_val.lower() != "nan" else "",
                             "cursos": [],
+                            "creditos_obligatorios": cred_obli,
                             "creditos_electivos": cred_elec
                         }
                         if c_val and c_val.lower() != "nan":
                             current_student["cursos"].append(c_val)
                     elif current_student:
+                        if cred_obli > 0 and current_student.get("creditos_obligatorios", 0.0) == 0.0:
+                            current_student["creditos_obligatorios"] = cred_obli
                         if cred_elec > 0 and current_student.get("creditos_electivos", 0.0) == 0.0:
                             current_student["creditos_electivos"] = cred_elec
                         if not current_student.get("carrera") and car_val and car_val.lower() != "nan":
@@ -1868,6 +1927,7 @@ class ExtractorDocumentoIESExcel:
             "fecha_doc_ies_texto": "",
             "cursos_pendientes": [],
             "cursos_pendientes_texto": "",
+            "creditos_obligatorios": 0.0,
             "creditos_electivos": 0.0,
             "estudiante_bloque": None,
             "ies_validada": True,
@@ -1928,11 +1988,13 @@ class ExtractorDocumentoIESExcel:
                 if b:
                     resultado["cursos_pendientes"] = b.get("cursos", [])
                     resultado["cursos_pendientes_texto"] = "\n".join(f"{i+1}. {c}" for i, c in enumerate(b.get("cursos", [])))
+                    resultado["creditos_obligatorios"] = b.get("creditos_obligatorios", 0.0)
                     resultado["creditos_electivos"] = b.get("creditos_electivos", 0.0)
                     resultado["estudiante_bloque"] = b
                 else:
                     resultado["cursos_pendientes"] = []
                     resultado["cursos_pendientes_texto"] = ""
+                    resultado["creditos_obligatorios"] = 0.0
                     resultado["creditos_electivos"] = 0.0
 
         except Exception as e:
@@ -2050,6 +2112,14 @@ class ExtractorDocumentoIES:
         r"electivos?\s+pendientes?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
         re.IGNORECASE
     )
+    PATRON_CREDITOS_ELECTIVOS_4 = re.compile(
+        r"(?:total\s+de\s+)?cr[eé]ditos?\s+electivos?\s+pendientes?(?:\s+para\s+culminar\s+la\s+carrera)?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_ELECTIVOS_5 = re.compile(
+        r"total\s+de\s+cr[eé]ditos?\s+electivos?(?:[^\n\r\d:]{0,80})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
 
     @classmethod
     def extraer_creditos_electivos(cls, texto: str, tablas: list = None) -> float:
@@ -2069,7 +2139,55 @@ class ExtractorDocumentoIES:
                                     return float(m.group(1).replace(",", "."))
                                 except Exception:
                                     pass
-        for p in [cls.PATRON_CREDITOS_ELECTIVOS, cls.PATRON_CREDITOS_ELECTIVOS_2, cls.PATRON_CREDITOS_ELECTIVOS_3]:
+        for p in [cls.PATRON_CREDITOS_ELECTIVOS_4, cls.PATRON_CREDITOS_ELECTIVOS_5, cls.PATRON_CREDITOS_ELECTIVOS, cls.PATRON_CREDITOS_ELECTIVOS_2, cls.PATRON_CREDITOS_ELECTIVOS_3]:
+            m = p.search(texto)
+            if m:
+                try:
+                    return float(m.group(1).replace(",", "."))
+                except Exception:
+                    pass
+        return 0.0
+
+    PATRON_CREDITOS_OBLIGATORIOS = re.compile(
+        r"(?:total\s+de\s+)?cr[eé]ditos?\s+obligatorios?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_OBLIGATORIOS_2 = re.compile(
+        r"(\d+(?:[\.,]\d+)?)\s*cr[eé]ditos?\s+obligatorios?",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_OBLIGATORIOS_3 = re.compile(
+        r"obligatorios?\s+pendientes?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_OBLIGATORIOS_4 = re.compile(
+        r"(?:total\s+de\s+)?cr[eé]ditos?\s+obligatorios?\s+pendientes?(?:\s+para\s+culminar\s+la\s+carrera)?(?:[^\n\r\d:]{0,50})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+    PATRON_CREDITOS_OBLIGATORIOS_5 = re.compile(
+        r"total\s+de\s+cr[eé]ditos?\s+obligatorios?(?:[^\n\r\d:]{0,80})[:\s]+(\d+(?:[\.,]\d+)?)",
+        re.IGNORECASE
+    )
+
+    @classmethod
+    def extraer_creditos_obligatorios(cls, texto: str, tablas: list = None) -> float:
+        """Detecta y parsea créditos obligatorios pendientes en PDF (texto o tablas)."""
+        if tablas:
+            for t in tablas:
+                if not t or len(t) < 2:
+                    continue
+                for row in t:
+                    row_str = " ".join(str(c or "") for c in row).lower()
+                    if "obligatorio" in row_str and any(w in row_str for w in ["pendiente", "credito", "crédito", "resta", "falta"]):
+                        for celda in row:
+                            c_s = str(celda or "").strip()
+                            m = re.match(r"^(\d+(?:[\.,]\d+)?)$", c_s)
+                            if m:
+                                try:
+                                    return float(m.group(1).replace(",", "."))
+                                except Exception:
+                                    pass
+        for p in [cls.PATRON_CREDITOS_OBLIGATORIOS_4, cls.PATRON_CREDITOS_OBLIGATORIOS_5, cls.PATRON_CREDITOS_OBLIGATORIOS, cls.PATRON_CREDITOS_OBLIGATORIOS_2, cls.PATRON_CREDITOS_OBLIGATORIOS_3]:
             m = p.search(texto)
             if m:
                 try:
@@ -2198,6 +2316,7 @@ class ExtractorDocumentoIES:
             "fecha_doc_ies_texto": "",
             "cursos_pendientes": [],
             "cursos_pendientes_texto": "",
+            "creditos_obligatorios": 0.0,
             "creditos_electivos": 0.0,
             "ies_validada": False,
             "alerta_no_culminacion": False,
@@ -2223,6 +2342,7 @@ class ExtractorDocumentoIES:
                     resultado["fecha_doc_ies_texto"] = b.get("fecha_doc_texto", "")
                     resultado["cursos_pendientes"] = b.get("cursos", [])
                     resultado["cursos_pendientes_texto"] = b.get("cursos_texto", "")
+                    resultado["creditos_obligatorios"] = float(b.get("creditos_obligatorios", 0.0) or 0.0)
                     resultado["creditos_electivos"] = float(b.get("creditos_electivos", 0.0) or 0.0)
                     resultado["alerta_no_culminacion"] = b.get("alerta_no_culminacion", False)
                     resultado["motivo_no_culminacion"] = b.get("motivo_no_culminacion", "")
@@ -2292,7 +2412,8 @@ class ExtractorDocumentoIES:
                 f"{i+1}. {c}" for i, c in enumerate(cursos)
             )
 
-        # Créditos electivos pendientes
+        # Créditos pendientes (obligatorios y electivos)
+        resultado["creditos_obligatorios"] = cls.extraer_creditos_obligatorios(texto_completo, tablas)
         resultado["creditos_electivos"] = cls.extraer_creditos_electivos(texto_completo, tablas)
 
         # Alerta de no culminación
@@ -2379,6 +2500,7 @@ class ExtractorDocumentoIES:
                             "cursos_texto": cursos_txt,
                             "carrera": carrera_doc,
                             "institucion": ies_doc,
+                            "creditos_obligatorios": cls.extraer_creditos_obligatorios(txt, tbls),
                             "creditos_electivos": cls.extraer_creditos_electivos(txt, tbls),
                             "alerta_no_culminacion": alerta,
                             "motivo_no_culminacion": motivo,
@@ -3092,6 +3214,8 @@ def generar_concordancias_genero(sexo: str) -> dict:
             "sexo_articulo_1": "una (1) becaria",
             "sexo_articulo_2": "la becaria",
             "sexo_conector": "presentada por una becaria",
+            "sexo_conector_beneficiario": "presentada por una (1) beneficiaria",
+            "sexo_conector_beneficiario_masc": "presentado por una (1) beneficiaria",
             "sexo_becario_a": "becaria",
             "sexo_nominado_a": "nominada",
             "sexo_interesado_a": "interesada",
@@ -3101,12 +3225,21 @@ def generar_concordancias_genero(sexo: str) -> dict:
             "de_un_a_becario_a": "de una (1) becaria",
             "de_una_becaria": "de una (1) becaria",
             "de_un_becario": "de una (1) becaria",
+            "el_la_beneficiario_a": "la beneficiaria",
+            "del_beneficiario_a": "de la beneficiaria",
+            "del_beneficiario": "de la beneficiaria",
+            "de_un_a_beneficiario_a": "de una (1) beneficiaria",
+            "de_un_beneficiario": "de una (1) beneficiaria",
+            "de_una_beneficiaria": "de una (1) beneficiaria",
+            "un_a_beneficiario_a": "una (1) beneficiaria",
         }
     else:
         return {
             "sexo_articulo_1": "un (1) becario",
             "sexo_articulo_2": "el becario",
             "sexo_conector": "presentado por un becario",
+            "sexo_conector_beneficiario": "presentado por un (1) beneficiario",
+            "sexo_conector_beneficiario_masc": "presentado por un (1) beneficiario",
             "sexo_becario_a": "becario",
             "sexo_nominado_a": "nominado",
             "sexo_interesado_a": "interesado",
@@ -3116,6 +3249,13 @@ def generar_concordancias_genero(sexo: str) -> dict:
             "de_un_a_becario_a": "de un (1) becario",
             "de_una_becaria": "de un (1) becario",
             "de_un_becario": "de un (1) becario",
+            "el_la_beneficiario_a": "el beneficiario",
+            "del_beneficiario_a": "del beneficiario",
+            "del_beneficiario": "del beneficiario",
+            "de_un_a_beneficiario_a": "de un (1) beneficiario",
+            "de_un_beneficiario": "de un (1) beneficiario",
+            "de_una_beneficiaria": "de un (1) beneficiario",
+            "un_a_beneficiario_a": "un (1) beneficiario",
         }
 
 
@@ -3406,6 +3546,7 @@ class ProcesadorInformes:
         nro_informe: str = "",
         rutas_formatos: list = None,
         tipo_formato_autogenerado: str = "individual",
+        es_no_viable: bool = False,
     ) -> None:
         self.ruta_excel = Path(ruta_excel)
         self.ruta_formato_autogenerado = Path(ruta_formato_autogenerado)
@@ -3417,6 +3558,7 @@ class ProcesadorInformes:
         self.nro_informe = nro_informe
         self.rutas_formatos = [Path(r) for r in rutas_formatos] if rutas_formatos else []
         self.tipo_formato_autogenerado = str(tipo_formato_autogenerado or "individual").lower()
+        self.es_no_viable = es_no_viable
         self.advertencias = []
         self.alerta_electivos = ""
         self.becarios_con_electivos = []
@@ -3450,7 +3592,10 @@ class ProcesadorInformes:
         # --- Paso 2: Informe SUCCOR ---
         self._progreso(0.15, "Extrayendo Informe SUCCOR...")
         self._log("Doc.2: Leyendo Informe SUCCOR...")
-        datos_succor = ExtractorInformeSuccor.extraer(self.ruta_informe_succor)
+        datos_succor = ExtractorInformeSuccor.extraer(
+            self.ruta_informe_succor,
+            validar_no_culmina=not self.es_no_viable
+        )
         # Limpiar nombre del informe: truncar en LIMA y capitalizar 'Informe'
         nombre_informe_raw = datos_succor.get("nombre_informe_succor", "")
         ctx["NOMBRE_INFORME_SUCCOR"] = limpiar_nombre_informe(nombre_informe_raw)
@@ -3667,7 +3812,12 @@ class ProcesadorInformes:
             self.fecha_fin = ff
             if ff and ff < date(2026, 4, 1):
                 msg = f"ATENCIÓN: La fecha de fin de estudios del becario es {ff.strftime('%d/%m/%Y')} (antes del 1 de abril de 2026). Fijarse si corresponde la ampliacion para el 2026-II"
-                raise FechaFinInsuficienteException(msg)
+                if not self.es_no_viable:
+                    raise FechaFinInsuficienteException(msg)
+                else:
+                    self._log(f"  [AVISO NO VIABLE] {msg}")
+                    if hasattr(self, "advertencias"):
+                        self.advertencias.append(msg)
 
             # Tabla de ciclos
             ciclos = construir_tabla_ciclos(fi, ff)
@@ -3810,18 +3960,44 @@ class ProcesadorInformes:
         n_succor = len(cursos_succor)
         n_ies = len(cursos_ies)
 
-        if n_ies > 0:
-            # Doc. IES siempre prevalece — es la fuente definitiva
-            ctx["CURSOS_PENDIENTES"] = datos_ies.get("cursos_pendientes_texto", "")
-            self._log(f"  Cursos pendientes (desde doc. IES): {n_ies} curso(s) [fuente definitiva]")
-            if n_succor > 0:
-                self._log(f"  Referencia SUCCOR tenía: {n_succor} curso(s)")
-        elif n_succor > 0:
-            # Respaldo: solo si el doc. IES no detectó ningún curso
+        base_cursos = list(cursos_ies) if n_ies > 0 else (list(cursos_succor) if n_succor > 0 else [])
+
+        # Filtrar posibles líneas previas que contengan electivos en crudo para evitar duplicar
+        cursos_limpios = []
+        for c in base_cursos:
+            c_str = str(c or "").strip()
+            if not c_str:
+                continue
+            if re.search(r"\belectivo(?:s)?\b", c_str, re.IGNORECASE) and re.search(r"\b(?:pendiente|cr[eé]dito|restante)\b", c_str, re.IGNORECASE):
+                continue
+            cursos_limpios.append(c_str)
+
+        # Créditos obligatorios y electivos pendientes extraídos del documento de la IES
+        cred_obli = float(datos_ies.get("creditos_obligatorios", 0.0) or 0.0)
+        cred_elec = float(datos_ies.get("creditos_electivos", 0.0) or 0.0)
+
+        def _fmt_cred_val(val: float) -> str:
+            if not val or val <= 0:
+                return "0"
+            return str(int(val)) if float(val).is_integer() else str(val)
+
+        cred_obli_str = _fmt_cred_val(cred_obli)
+        cred_elec_str = _fmt_cred_val(cred_elec)
+
+        ctx["CREDITOS_OBLIGATORIOS"] = cred_obli_str
+        ctx["CREDITOS_OBLIGATORIOS_PENDIENTES"] = cred_obli_str
+        ctx["TOTAL_CREDITOS_OBLIGATORIOS"] = cred_obli_str
+
+        ctx["CREDITOS_ELECTIVOS"] = cred_elec_str
+        ctx["CREDITOS_ELECTIVOS_PENDIENTES"] = cred_elec_str
+        ctx["TOTAL_CREDITOS_ELECTIVOS"] = cred_elec_str
+
+        # En CURSOS_PENDIENTES solo se listan los cursos regulares (los electivos van en su propio marcador)
+        if cursos_limpios:
             ctx["CURSOS_PENDIENTES"] = "\n".join(
-                f"{i+1}. {c}" for i, c in enumerate(cursos_succor)
+                f"{i+1}. {c}" for i, c in enumerate(cursos_limpios)
             )
-            self._log(f"  Cursos pendientes (desde SUCCOR - respaldo): {n_succor} curso(s) [doc. IES sin datos]")
+            self._log(f"  Cursos pendientes asignados: {len(cursos_limpios)} ítem(s) (Créditos Obligatorios: {cred_obli_str}, Créditos Electivos: {cred_elec_str})")
         else:
             ctx["CURSOS_PENDIENTES"] = ""
             self._log("  ADVERTENCIA: No se detectaron cursos pendientes en ninguna fuente.")
@@ -3895,12 +4071,15 @@ class ProcesadorInformes:
         correo_fmt = str(datos_fmt.get("correo_electronico", "") or "").strip()
         correo_bd = str(datos_bd.get("correo_electronico", "") or "").strip() if 'datos_bd' in locals() and datos_bd else ""
         ctx["CORREO_ELECTRONICO"] = correo_fmt or correo_bd
+        ctx["CORREO_FORMATO_AUTOGENERADO"] = correo_fmt
 
         ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
+        ctx["AUTORIZA_CASILLA_FORMATO"] = datos_fmt.get("autoriza_casilla", False)
 
         tel_fmt = str(datos_fmt.get("telefono_contacto", "") or "").strip()
         tel_bd = str(datos_bd.get("telefono_contacto", "") or "").strip() if 'datos_bd' in locals() and datos_bd else ""
         ctx["TELEFONO_CONTACTO"] = tel_fmt or tel_bd
+        ctx["TELEFONO_FORMATO_AUTOGENERADO"] = tel_fmt
         exp_sol_ind = str(datos_fmt.get("numero_expediente", "")).strip() or str(ctx.get("NUMERO_SIGEDO", "")).split("-")[0].strip()
         exp_pad_ind = ctx.get("EXPEDIENTE_PADRON") or padron.obtener_expediente_vigente(ctx.get("DNI_VALIDADO", ""))
         exp_pad_ind = re.sub(r"\.0+$", "", str(exp_pad_ind or "")).strip()
@@ -3930,12 +4109,66 @@ class ProcesadorInformes:
         # --- Datos complementarios ---
         ctx["FECHA_ACTUAL_TEXTO"] = fecha_a_texto(date.today())
 
+        if self.es_no_viable:
+            # Adecuación de conectores específicos para informe No Viable
+            sexo_str = str(ctx.get("SEXO") or "").strip().upper()
+            es_fem = sexo_str.startswith("F") or sexo_str in ("2", "MUJER", "FEMENINO")
+            if es_fem:
+                # a) SEXO_CONECTOR conectado a "beneficiaria"
+                ctx["SEXO_CONECTOR"] = "presentado por una (1) beneficiaria"
+                ctx["SEXO_CONECTOR_BENEFICIARIO"] = "presentado por una (1) beneficiaria"
+                ctx["SEXO_CONECTOR_BENEFICIARIA"] = "presentada por una (1) beneficiaria"
+                # b) EL_LA_BENEFICIARIO_A (Asunto, 2.1 y 3.1)
+                ctx["EL_LA_BENEFICIARIO_A"] = "la beneficiaria"
+                ctx["BENEFICIARIO_A"] = "beneficiaria"
+                ctx["DEL_BENEFICIARIO_A"] = "de la beneficiaria"
+                ctx["DEL_BENEFICIARIO"] = "de la beneficiaria"
+                ctx["DE_UN_A_BENEFICIARIO_A"] = "de una (1) beneficiaria"
+                ctx["DE_UN_BENEFICIARIO_A"] = "de una (1) beneficiaria"
+                ctx["UN_A_BENEFICIARIO_A"] = "una (1) beneficiaria"
+                ctx["A_LA_BENEFICIARIO_A"] = "a la beneficiaria"
+                # c) Conectado a "señor" para los demás numerales -> "la señorita"
+                ctx["EL_LA_SENOR_A"] = "la señorita"
+                ctx["EL_LA_SENOR"] = "la señorita"
+                ctx["SENOR_A"] = "señorita"
+                ctx["DEL_SENOR_A"] = "de la señorita"
+                ctx["A_LA_SENOR_A"] = "a la señorita"
+            else:
+                # a) SEXO_CONECTOR conectado a "beneficiario"
+                ctx["SEXO_CONECTOR"] = "presentado por un (1) beneficiario"
+                ctx["SEXO_CONECTOR_BENEFICIARIO"] = "presentado por un (1) beneficiario"
+                ctx["SEXO_CONECTOR_BENEFICIARIA"] = "presentado por un (1) beneficiario"
+                # b) EL_LA_BENEFICIARIO_A (Asunto, 2.1 y 3.1)
+                ctx["EL_LA_BENEFICIARIO_A"] = "el beneficiario"
+                ctx["BENEFICIARIO_A"] = "beneficiario"
+                ctx["DEL_BENEFICIARIO_A"] = "del beneficiario"
+                ctx["DEL_BENEFICIARIO"] = "del beneficiario"
+                ctx["DE_UN_A_BENEFICIARIO_A"] = "de un (1) beneficiario"
+                ctx["DE_UN_BENEFICIARIO_A"] = "de un (1) beneficiario"
+                ctx["UN_A_BENEFICIARIO_A"] = "un (1) beneficiario"
+                ctx["A_LA_BENEFICIARIO_A"] = "al beneficiario"
+                # c) Conectado a "señor" para los demás numerales -> "el señor"
+                ctx["EL_LA_SENOR_A"] = "el señor"
+                ctx["EL_LA_SENOR"] = "el señor"
+                ctx["SENOR_A"] = "señor"
+                ctx["DEL_SENOR_A"] = "del señor"
+                ctx["A_LA_SENOR_A"] = "al señor"
+            # Fallback en caso de que en alguna parte aún se use EL_LA_BECARIO_A, DEL_BECARIO_A o DE_UN_A_BECARIO_A
+            ctx["EL_LA_BECARIO_A"] = ctx["EL_LA_BENEFICIARIO_A"]
+            ctx["DEL_BECARIO_A"] = ctx["DEL_BENEFICIARIO_A"]
+            ctx["DE_UN_A_BECARIO_A"] = ctx["DE_UN_A_BENEFICIARIO_A"]
+            self._log(f"  Conectores No Viable asignados (Género: {'Femenino' if es_fem else 'Masculino'})")
+
         # --- Paso 6: Generar Word ---
         self._progreso(0.85, "Generando documentos...")
-        self._log("Generando Informe Word...")
         from generador_word import GeneradorWord
         generador = GeneradorWord()
-        ruta_informe = generador.generar(ctx, self._log)
+        if self.es_no_viable:
+            self._log("Generando Informe Word (No Viable)...")
+            ruta_informe = generador.generar_no_viable(ctx, self._log)
+        else:
+            self._log("Generando Informe Word...")
+            ruta_informe = generador.generar(ctx, self._log)
         
         self._log("Generando Oficio Word...")
         try:
@@ -3954,7 +4187,11 @@ class ProcesadorInformes:
         try:
             from generador_excel import GeneradorExcel
             gen_excel = GeneradorExcel()
-            ruta_excel = gen_excel.generar(ctx, self._log)
+            if self.es_no_viable:
+                self._log("Generando Notificación Acto Administrativo Excel (No Viable)...")
+                ruta_excel = gen_excel.generar_acto_administrativo(ctx, self._log)
+            else:
+                ruta_excel = gen_excel.generar(ctx, self._log)
             if ruta_excel and ruta_excel.exists():
                 self._log(f"  Notificación Excel generada: {ruta_excel.name}")
         except Exception as e:
@@ -3969,6 +4206,11 @@ class ProcesadorInformes:
         
         rutas_generadas = [r for r in (ruta_informe, ruta_oficio, ruta_excel) if r]
         return rutas_generadas
+
+    def ejecutar_no_viable(self) -> list[Path]:
+        """Ejecuta el procesamiento para la modalidad No Viable."""
+        self.es_no_viable = True
+        return self.ejecutar()
 
     def _validar_entradas(self) -> None:
         archivos = {
@@ -4317,8 +4559,11 @@ class ProcesadorInformes:
             ctx["FECHA_SOLICITUD_OBJ"] = f_sol_obj
             ctx["BECA_Y_CONVOCATORIA_VALIDADA"] = corregir_nombre_beca_excelencia(ctx.get("BECA_Y_CONVOCATORIA_VALIDADA", ""))
             ctx["AUTORIZA_CASILLA"] = datos_fmt.get("autoriza_casilla", False)
+            ctx["AUTORIZA_CASILLA_FORMATO"] = datos_fmt.get("autoriza_casilla", False)
             ctx["CORREO_ELECTRONICO"] = datos_fmt.get("correo_electronico", "")
+            ctx["CORREO_FORMATO_AUTOGENERADO"] = datos_fmt.get("correo_electronico", "")
             ctx["TELEFONO_CONTACTO"] = datos_fmt.get("telefono_contacto", "")
+            ctx["TELEFONO_FORMATO_AUTOGENERADO"] = datos_fmt.get("telefono_contacto", "")
             
             # Extracción y filtrado de Cursos Pendientes por Becario desde el documento de la IES
             cursos_bec = []
@@ -4382,15 +4627,47 @@ class ProcesadorInformes:
                     cursos_bec = bec_succor["cursos_pendientes_ies"]
                 else:
                     cursos_bec = datos_ies.get("cursos_pendientes", [])
-                if cursos_bec:
-                    cursos_txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(cursos_bec))
+
+            # Créditos obligatorios y electivos pendientes del estudiante
+            cred_obli_final = float(estudiante_ies.get("creditos_obligatorios", 0.0) or 0.0) if 'estudiante_ies' in locals() and estudiante_ies else float(datos_ies.get("creditos_obligatorios", 0.0) or 0.0)
+            cred_elec_final = float(estudiante_ies.get("creditos_electivos", 0.0) or 0.0) if 'estudiante_ies' in locals() and estudiante_ies else float(datos_ies.get("creditos_electivos", 0.0) or 0.0)
+
+            cursos_bec_limpios = []
+            for c in cursos_bec:
+                c_str = str(c or "").strip()
+                if not c_str:
+                    continue
+                if re.search(r"\belectivo(?:s)?\b", c_str, re.IGNORECASE) and re.search(r"\b(?:pendiente|cr[eé]dito|restante)\b", c_str, re.IGNORECASE):
+                    continue
+                cursos_bec_limpios.append(c_str)
+
+            def _fmt_cred_m(val: float) -> str:
+                if not val or val <= 0:
+                    return "0"
+                return str(int(val)) if float(val).is_integer() else str(val)
+
+            cred_obli_str = _fmt_cred_m(cred_obli_final)
+            cred_elec_str = _fmt_cred_m(cred_elec_final)
+
+            ctx["CREDITOS_OBLIGATORIOS"] = cred_obli_str
+            ctx["CREDITOS_OBLIGATORIOS_PENDIENTES"] = cred_obli_str
+            ctx["TOTAL_CREDITOS_OBLIGATORIOS"] = cred_obli_str
+
+            ctx["CREDITOS_ELECTIVOS"] = cred_elec_str
+            ctx["CREDITOS_ELECTIVOS_PENDIENTES"] = cred_elec_str
+            ctx["TOTAL_CREDITOS_ELECTIVOS"] = cred_elec_str
+
+            if cursos_bec_limpios:
+                cursos_txt = "\n".join(f"{i+1}. {c}" for i, c in enumerate(cursos_bec_limpios))
+            else:
+                cursos_txt = ""
 
             ctx["CURSOS_PENDIENTES"] = cursos_txt
 
             # Fallback de Carrera si sigue vacía
             if not ctx.get("CARRERA") or str(ctx["CARRERA"]).strip() in ("", "(no detectada)"):
-                if cursos_bec:
-                    ctx["CARRERA"] = deducir_carrera_por_cursos(cursos_bec)
+                if cursos_bec_limpios:
+                    ctx["CARRERA"] = deducir_carrera_por_cursos(cursos_bec_limpios)
                 elif bec_succor and bec_succor.get("carrera"):
                     ctx["CARRERA"] = bec_succor["carrera"]
                 elif datos_succor.get("carrera"):
