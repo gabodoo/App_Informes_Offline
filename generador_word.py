@@ -1843,11 +1843,10 @@ class GeneradorWord:
         return ruta_salida
 
     def _ajustar_conectores_no_viable(self, ruta_docx: Path, contexto: dict, log: LogCallback | None = None) -> None:
-        """Post-procesamiento de seguridad para informe No Viable:
-        Asegura que en Asunto, 2.1 y 3.1 se emplee 'beneficiario/a' con '(1)',
-        en 2.1 'de un (1) beneficiario' / 'de una (1) beneficiaria',
-        en 2.12 'del beneficiario' / 'de la beneficiaria' (eliminando 'del el beneficiario'),
-        y al final de cursos el texto de créditos electivos pendientes."""
+        """Post-procesamiento estricto para informe No Viable:
+        Únicamente reemplaza los marcadores explícitos {{ ... }} definidos en la plantilla.
+        Bajo ninguna circunstancia modifica texto plano, citas normativas ni términos
+        como 'beneficiario', 'becario' u otros que no correspondan a un marcador."""
         _log = log or (lambda msg: None)
         try:
             doc = Document(ruta_docx)
@@ -1857,80 +1856,36 @@ class GeneradorWord:
             val_conector = "presentado por una (1) beneficiaria" if es_fem else "presentado por un (1) beneficiario"
             val_de_beneficiario = "de una (1) beneficiaria" if es_fem else "de un (1) beneficiario"
             val_del_beneficiario = "de la beneficiaria" if es_fem else "del beneficiario"
-            val_beneficiario = "la beneficiaria" if es_fem else "el beneficiario"
-            val_senor = "la señorita" if es_fem else "el señor"
-            val_del_senor = "de la señorita" if es_fem else "del señor"
 
             cred_obli_ctx = contexto.get("CREDITOS_OBLIGATORIOS") or contexto.get("creditos_obligatorios", "")
             cred_elec_ctx = contexto.get("CREDITOS_ELECTIVOS") or contexto.get("creditos_electivos", "")
             val_cred_obli = str(cred_obli_ctx).strip() if cred_obli_ctx is not None else "0"
             val_cred_elec = str(cred_elec_ctx).strip() if cred_elec_ctx is not None else "0"
 
-            seccion = "HEADER"
             modificado = False
 
             def _procesar_p(p):
-                nonlocal seccion, modificado
+                nonlocal modificado
                 txt = p.text or ""
-                t_clean = re.sub(r"\s+", " ", txt).strip()
-                if not t_clean:
+                # Si el párrafo no contiene marcadores {{ }}, no tocar absolutamente nada
+                if "{{" not in txt:
                     return
-
-                # Detectar sección o numeral
-                if re.search(r"^\s*ASUNTO\b", t_clean, re.IGNORECASE) or ("ASUNTO" in t_clean.upper() and ("AMPLIACI" in t_clean.upper() or "PERIODO" in t_clean.upper())):
-                    seccion = "ASUNTO"
-                elif re.search(r"(?:^|[\s\.\b])2\.1[\.\s]", t_clean) or ("Subdirección de Coordinación" in t_clean and "traslada la solicitud" in t_clean):
-                    seccion = "2.1"
-                elif re.search(r"(?:^|[\s\.\b])2\.12[\.\s]", t_clean) or ("situación de cursos pendientes" in t_clean.lower()):
-                    seccion = "2.12"
-                elif re.search(r"(?:^|[\s\.\b])2\.[2-9][\.\s]", t_clean):
-                    seccion = "OTROS"
-                elif re.search(r"(?:^|[\s\.\b])3\.1[\.\s]", t_clean):
-                    seccion = "3.1"
-                elif re.search(r"(?:^|[\s\.\b])(?:3\.[2-9]|[4-9]\.\d*)[\.\s]", t_clean):
-                    seccion = "OTROS"
 
                 txt_nuevo = txt
 
-                # 1. Correcciones universales para 'del el beneficiario' y concordancias erróneas
-                txt_nuevo = re.sub(r"\bdel\s+el\s+(?:beneficiari[oa]|becari[oa])\b", val_del_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-                txt_nuevo = re.sub(r"\bdel\s+la\s+(?:beneficiaria|becaria)\b", "de la beneficiaria", txt_nuevo, flags=re.IGNORECASE)
-                txt_nuevo = re.sub(r"\bde\s+el\s+(?:beneficiario|becario)\b", "del beneficiario", txt_nuevo, flags=re.IGNORECASE)
-
-                # 2. Correcciones en ASUNTO
-                if seccion == "ASUNTO":
-                    txt_nuevo = re.sub(r"\bpresentad[oa]\s+por\s+(?:un[a]?\s+)?(?:\(1\)\s+)?(?:becari[oa]|beneficiari[oa])\b", val_conector, txt_nuevo, flags=re.IGNORECASE)
-                    txt_nuevo = re.sub(r"\bpor\s+un[a]?\s+(?:\(1\)\s+)?beneficiari[oa]\b", "por una (1) beneficiaria" if es_fem else "por un (1) beneficiario", txt_nuevo, flags=re.IGNORECASE)
-                    txt_nuevo = re.sub(r"\bpresentad[oa]\s+presentad[oa]\b", "presentado", txt_nuevo, flags=re.IGNORECASE)
-
-                # 3. Correcciones en numeral 2.1
-                elif seccion == "2.1":
-                    txt_nuevo = re.sub(r"\bde\s+1\s+(?:el\s+|la\s+)?(?:beneficiari[oa]|becari[oa])\b", val_de_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-                    txt_nuevo = re.sub(r"\bde\s+(?:un[a]?\s+)?(?:\(1\)\s+)?(?:el\s+|la\s+)?(?:beneficiari[oa]|becari[oa])\b", val_de_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-                    txt_nuevo = re.sub(r"\b(?:de\s+la|del)\s+(?:beneficiari[oa]|becari[oa])\s+de\s+la\s+Beca\b", f"{val_de_beneficiario} de la Beca", txt_nuevo, flags=re.IGNORECASE)
-                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-
-                # 4. Correcciones en numeral 2.12
-                elif seccion == "2.12":
-                    txt_nuevo = re.sub(r"\b(?:del\s+el|del|de\s+la|de\s+el)\s+(?:beneficiari[oa]|becari[oa])\b", val_del_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-
-                # 5. Correcciones en numeral 3.1
-                elif seccion == "3.1":
-                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_beneficiario, txt_nuevo, flags=re.IGNORECASE)
-
-                # 6. Otros numerales
-                else:
-                    txt_nuevo = re.sub(r"\b(?:el\s+becario|la\s+becaria)\b", val_senor, txt_nuevo, flags=re.IGNORECASE)
-
-                # 7. Reemplazo de marcadores Jinja o residuales no resueltos
+                # Únicamente reemplazo de marcadores explícitos existentes en la plantilla
                 txt_nuevo = txt_nuevo.replace("{{ DEL_BENEFICIARIO_A }}", val_del_beneficiario)
+                txt_nuevo = txt_nuevo.replace("{{DEL_BENEFICIARIO_A}}", val_del_beneficiario)
                 txt_nuevo = txt_nuevo.replace("{{ DE_UN_A_BENEFICIARIO_A }}", val_de_beneficiario)
+                txt_nuevo = txt_nuevo.replace("{{DE_UN_A_BENEFICIARIO_A}}", val_de_beneficiario)
                 txt_nuevo = txt_nuevo.replace("{{ SEXO_CONECTOR_BENEFICIARIO }}", val_conector)
+                txt_nuevo = txt_nuevo.replace("{{SEXO_CONECTOR_BENEFICIARIO}}", val_conector)
                 txt_nuevo = txt_nuevo.replace("{{ CREDITOS_OBLIGATORIOS }}", val_cred_obli)
-                txt_nuevo = txt_nuevo.replace("{{ CREDITOS_ELECTIVOS }}", val_cred_elec)
                 txt_nuevo = txt_nuevo.replace("{{CREDITOS_OBLIGATORIOS}}", val_cred_obli)
+                txt_nuevo = txt_nuevo.replace("{{ CREDITOS_ELECTIVOS }}", val_cred_elec)
                 txt_nuevo = txt_nuevo.replace("{{CREDITOS_ELECTIVOS}}", val_cred_elec)
                 txt_nuevo = txt_nuevo.replace("{{ CURSOS_ELECTIVOS_PENDIENTES }}", "")
+                txt_nuevo = txt_nuevo.replace("{{CURSOS_ELECTIVOS_PENDIENTES}}", "")
 
                 if txt_nuevo != txt:
                     if len(p.runs) <= 1:
@@ -1969,7 +1924,7 @@ class GeneradorWord:
 
             if modificado:
                 doc.save(ruta_docx)
-                _log("  Post-procesamiento de conectores No Viable completado exitosamente.")
+                _log("  Post-procesamiento de marcadores completado.")
         except Exception as e:
             _log(f"  [AVISO post-procesamiento No Viable]: {e}")
 
